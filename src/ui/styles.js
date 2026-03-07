@@ -282,6 +282,54 @@ export const styles = `
   .ps-reco-table tr:last-child td { border-bottom: none; }
   .ps-reco-url { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* Reco section count */
+  .ps-reco-count { font-size: 11px; font-weight: 400; color: var(--text-muted); }
+
+  /* Reco item count badge */
+  .ps-reco-item-count { font-size: 10px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; white-space: nowrap; flex-shrink: 0; }
+
+  /* Reco clickable links */
+  .ps-reco-link { color: #3b82f6; text-decoration: none; word-break: break-all; }
+  .ps-reco-link:hover { text-decoration: underline; }
+
+  /* Reco code snippets */
+  .ps-reco-snippet { display: inline-block; background: var(--bg-input); border: 1px solid var(--border); border-radius: 4px; padding: 2px 6px; font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--text-sec); max-width: 400px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; line-height: 1.5; margin: 2px 0; }
+
+  /* Reco selector */
+  .ps-reco-selector { display: block; font-size: 9px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; margin-top: 2px; word-break: break-all; }
+
+  /* Reco node label */
+  .ps-reco-node-label { display: block; font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+
+  /* Learn more link in reco descriptions */
+  .ps-reco-learn-link { color: #3b82f6; text-decoration: none; font-weight: 600; }
+  .ps-reco-learn-link:hover { text-decoration: underline; }
+
+  /* Reco table wrap (scrollable) */
+  .ps-reco-table-wrap { overflow-x: auto; max-width: 100%; margin: 8px 0 4px 0; }
+
+  /* Numeric column alignment */
+  .ps-reco-num-col { text-align: right; }
+  .ps-reco-num-cell { text-align: right; white-space: nowrap; }
+
+  /* URL cell */
+  .ps-reco-url-cell { max-width: 350px; word-break: break-all; }
+
+  /* Node cell */
+  .ps-reco-node-cell { max-width: 400px; }
+
+  /* Code cell */
+  .ps-reco-code-cell { max-width: 350px; }
+
+  /* Truncation notice */
+  .ps-reco-truncated { font-size: 10px; color: var(--text-dim); padding: 6px 8px; font-style: italic; }
+
+  /* Passed audits title */
+  .ps-passed-title { font-size: 12px; color: var(--text-muted); margin: 16px 0 8px; padding: 8px 0; border-top: 1px solid var(--border); }
+
+  /* Reco thumbnail */
+  .ps-reco-thumb { width: 48px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); vertical-align: middle; }
+
   @media (max-width: 640px) {
     .ps-controls-bar { flex-direction: column; align-items: flex-start; }
     .ps-page-row { flex-wrap: wrap; }

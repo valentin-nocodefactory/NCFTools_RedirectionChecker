@@ -371,16 +371,18 @@ function psSaveToStorage(domain) {
     qsa(".ps-page-row input[type=checkbox]:checked").forEach(function(cb) {
       selected.push(cb.closest(".ps-page-row").dataset.url);
     });
-    // Compact results: store only scores + metrics + recos, not full API response
+    // CWV metric keys to exclude from audits
+    var cwvMetricKeys = { "first-contentful-paint":1, "largest-contentful-paint":1, "total-blocking-time":1, "cumulative-layout-shift":1, "speed-index":1, "interactive":1 };
+    // Compact results: store scores + CWV + opportunities + diagnostics + passed count
     var compact = {};
     Object.keys(psResults).forEach(function(url) {
       compact[url] = {};
       ["mobile", "desktop"].forEach(function(s) {
         var d = psResults[url][s];
         if (!d) return;
-        // Already compact format
+        // Already compact format — keep as-is
         if (d._compact) {
-          compact[url][s] = { scores: d.scores, cwv: d.cwv, recos: d.recos };
+          compact[url][s] = { scores: d.scores, cwv: d.cwv, recos: d.recos, passedCount: d.passedCount || 0 };
           return;
         }
         // Full API response — extract compact data
@@ -396,38 +398,38 @@ function psSaveToStorage(domain) {
           if (audits[k]) cwv[k] = { val: audits[k].displayValue || "", score: audits[k].score };
         });
         var recos = [];
+        var passedCount = 0;
         Object.keys(audits).forEach(function(k) {
           var a = audits[k];
-          if (a.score !== null && a.score < 0.9 && a.details && a.details.type === "opportunity") {
-            var topItems = [];
-            var headings = [];
-            if (a.details.headings && a.details.items) {
-              headings = a.details.headings.map(function(h) { return { key: h.key, label: h.label || h.key, valueType: h.valueType || "text" }; });
-              var items = a.details.items.slice(0, 5);
-              items.forEach(function(item) {
-                var row = {};
-                headings.forEach(function(h) {
-                  if (item[h.key] !== undefined && item[h.key] !== null) {
-                    if (typeof item[h.key] === "object" && item[h.key].url) row[h.key] = item[h.key].url;
-                    else if (typeof item[h.key] === "object" && item[h.key].snippet) row[h.key] = item[h.key].snippet;
-                    else row[h.key] = item[h.key];
-                  }
-                });
-                topItems.push(row);
-              });
+          if (cwvMetricKeys[k]) return;
+          if (a.scoreDisplayMode === "notApplicable" || a.scoreDisplayMode === "manual" || a.scoreDisplayMode === "informative") return;
+          if (a.score !== null && a.score >= 0.9) { passedCount++; return; }
+          if (a.score === null) return;
+
+          var extracted = psExtractAuditItems(a);
+          // Limit items to 15 for storage (balance detail vs size)
+          var storedItems = extracted.items.slice(0, 15);
+          var reco = {
+            title: a.title,
+            desc: a.description || "",
+            score: a.score,
+            headings: extracted.headings.length > 0 ? extracted.headings : undefined,
+            items: storedItems.length > 0 ? storedItems : undefined,
+            totalItems: extracted.totalItems
+          };
+
+          if (a.details && a.details.type === "opportunity") {
+            reco.group = "opportunity";
+            reco.savings = a.details.overallSavingsMs ? (a.details.overallSavingsMs / 1000).toFixed(1) : "";
+            if (a.details.overallSavingsBytes) {
+              reco.savingsBytes = a.details.overallSavingsBytes >= 1048576 ? (a.details.overallSavingsBytes / 1048576).toFixed(1) + " MB" : (a.details.overallSavingsBytes / 1024).toFixed(0) + " KB";
             }
-            recos.push({
-              title: a.title,
-              desc: a.description || "",
-              savings: a.details.overallSavingsMs ? (a.details.overallSavingsMs / 1000).toFixed(1) : "",
-              score: a.score,
-              headings: headings.length > 0 ? headings : undefined,
-              items: topItems.length > 0 ? topItems : undefined
-            });
+          } else {
+            reco.group = "diagnostic";
           }
+          recos.push(reco);
         });
-        recos.sort(function(a, b) { return a.score - b.score; });
-        compact[url][s] = { scores: scores, cwv: cwv, recos: recos };
+        compact[url][s] = { scores: scores, cwv: cwv, recos: recos, passedCount: passedCount };
       });
       if (psResults[url].lastAnalyzed) compact[url].lastAnalyzed = psResults[url].lastAnalyzed;
     });
@@ -447,7 +449,7 @@ function psLoadCompactResults(domain) {
       ["mobile", "desktop"].forEach(function(s) {
         var c = parsed.results[url][s];
         if (!c) return;
-        psResults[url][s] = { _compact: true, scores: c.scores, cwv: c.cwv, recos: c.recos };
+        psResults[url][s] = { _compact: true, scores: c.scores, cwv: c.cwv, recos: c.recos, passedCount: c.passedCount || 0 };
       });
       if (parsed.results[url].lastAnalyzed) psResults[url].lastAnalyzed = parsed.results[url].lastAnalyzed;
     });
@@ -736,56 +738,110 @@ function psToggleDetail(url) {
 /* ── Format item values for reco tables ── */
 function psFormatItemValue(value, valueType) {
   if (value === undefined || value === null) return "\u2014";
-  if (valueType === "bytes") return (value / 1024).toFixed(1) + " KB";
-  if (valueType === "ms" || valueType === "timespanMs") return (value / 1000).toFixed(2) + " s";
+  if (valueType === "bytes") {
+    if (typeof value !== "number") return String(value);
+    if (value >= 1048576) return (value / 1048576).toFixed(1) + " MB";
+    return (value / 1024).toFixed(1) + " KB";
+  }
+  if (valueType === "ms" || valueType === "timespanMs") {
+    if (typeof value !== "number") return String(value);
+    if (value >= 1000) return (value / 1000).toFixed(1) + " s";
+    return Math.round(value) + " ms";
+  }
   if (valueType === "url") {
-    var s = String(value);
-    if (s.length > 70) return s.substring(0, 67) + "\u2026";
-    return s;
+    var s = typeof value === "object" ? (value.url || String(value)) : String(value);
+    var display = s;
+    if (display.length > 80) display = display.substring(0, 77) + "\u2026";
+    if (s.indexOf("http") === 0) return '<a href="' + s.replace(/"/g, "&quot;") + '" target="_blank" rel="noopener" class="ps-reco-link" title="' + s.replace(/"/g, "&quot;") + '">' + display.replace(/</g, "&lt;") + '</a>';
+    return '<span title="' + s.replace(/"/g, "&quot;") + '">' + display.replace(/</g, "&lt;") + '</span>';
   }
   if (valueType === "node") {
-    if (typeof value === "object") return value.snippet || value.selector || "\u2014";
+    if (typeof value === "object") {
+      var parts = [];
+      if (value.snippet) parts.push('<code class="ps-reco-snippet">' + value.snippet.replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</code>');
+      if (value.selector) parts.push('<span class="ps-reco-selector">' + value.selector.replace(/</g, "&lt;") + '</span>');
+      if (value.nodeLabel) parts.push('<span class="ps-reco-node-label">' + value.nodeLabel.replace(/</g, "&lt;") + '</span>');
+      return parts.length > 0 ? parts.join("") : "\u2014";
+    }
+    return String(value).replace(/</g, "&lt;");
+  }
+  if (valueType === "source-location") {
+    if (typeof value === "object") {
+      var loc = (value.url || "") + (value.line !== undefined ? ":" + value.line + ":" + (value.column || 0) : "");
+      if (loc && value.url && value.url.indexOf("http") === 0) return '<a href="' + value.url.replace(/"/g, "&quot;") + '" target="_blank" rel="noopener" class="ps-reco-link">' + loc.replace(/</g, "&lt;") + '</a>';
+      return loc || "\u2014";
+    }
     return String(value);
   }
+  if (valueType === "code") {
+    return '<code class="ps-reco-snippet">' + String(value).replace(/</g, "&lt;") + '</code>';
+  }
   if (valueType === "numeric") return typeof value === "number" ? value.toFixed(1) : String(value);
-  return String(value);
+  if (valueType === "thumbnail") {
+    if (typeof value === "string" && value.indexOf("http") === 0) return '<img src="' + value.replace(/"/g, "&quot;") + '" class="ps-reco-thumb" loading="lazy">';
+    return "\u2014";
+  }
+  // Default: handle objects and strings
+  if (typeof value === "object") return JSON.stringify(value).substring(0, 100);
+  return String(value).replace(/</g, "&lt;");
 }
 
-function psRenderRecoItems(recos) {
+function psRenderRecoItems(recos, sectionTitle) {
   if (!recos || recos.length === 0) return "";
-  var html = '<div class="ps-reco-title">\uD83D\uDCA1 Recommandations</div><div class="ps-reco-list">';
+  var title = sectionTitle || "\uD83D\uDCA1 Recommandations";
+  var html = '<div class="ps-reco-title">' + title + ' <span class="ps-reco-count">(' + recos.length + ')</span></div><div class="ps-reco-list">';
   recos.forEach(function(r, idx) {
     var color = psColor(Math.round(r.score * 100));
+    var itemCount = r.items ? r.items.length : 0;
+    var totalCount = r.totalItems || itemCount;
     html += '<div class="ps-reco-item" data-reco-idx="' + idx + '">' +
       '<span class="ps-reco-expand">\u25B6</span>' +
       '<span class="ps-reco-badge" style="background:' + color + '"></span>' +
-      '<span class="ps-reco-name">' + r.title + '</span>' +
-      (r.savings ? '<span class="ps-reco-saving">-' + r.savings + ' s</span>' : '') +
-      '</div>';
+      '<span class="ps-reco-name">' + r.title + '</span>';
+    if (r.savings && r.savings !== "0.0") {
+      html += '<span class="ps-reco-saving">\u2212' + r.savings + ' s</span>';
+    } else if (r.savingsBytes) {
+      html += '<span class="ps-reco-saving">\u2212' + r.savingsBytes + '</span>';
+    }
+    if (totalCount > 0) {
+      html += '<span class="ps-reco-item-count">' + totalCount + ' \u00e9l\u00e9ments</span>';
+    }
+    html += '</div>';
     // Detail wrap (description + table)
     html += '<div class="ps-reco-detail-wrap">';
     if (r.desc) {
-      // Clean markdown-style links from Lighthouse descriptions: [text](url) → text
-      var cleanDesc = r.desc.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
-      html += '<div class="ps-reco-desc">' + cleanDesc + '</div>';
+      // Convert markdown links [text](url) to clickable HTML links
+      var richDesc = r.desc.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" class="ps-reco-learn-link">$1</a>');
+      html += '<div class="ps-reco-desc">' + richDesc + '</div>';
     }
     if (r.items && r.items.length > 0 && r.headings && r.headings.length > 0) {
-      html += '<table class="ps-reco-table"><thead><tr>';
-      r.headings.forEach(function(h) {
-        html += '<th>' + (h.label || h.key) + '</th>';
+      // Filter out headings with no label and no data
+      var visibleHeadings = r.headings.filter(function(h) { return h.label || h.key; });
+      html += '<div class="ps-reco-table-wrap"><table class="ps-reco-table"><thead><tr>';
+      visibleHeadings.forEach(function(h) {
+        var alignCls = (h.valueType === "bytes" || h.valueType === "ms" || h.valueType === "timespanMs" || h.valueType === "numeric") ? ' class="ps-reco-num-col"' : '';
+        html += '<th' + alignCls + '>' + (h.label || h.key) + '</th>';
       });
       html += '</tr></thead><tbody>';
       r.items.forEach(function(item) {
         html += '<tr>';
-        r.headings.forEach(function(h) {
+        visibleHeadings.forEach(function(h) {
           var val = item[h.key];
           var formatted = psFormatItemValue(val, h.valueType);
-          var cls = h.valueType === "url" ? ' class="ps-reco-url"' : '';
-          html += '<td' + cls + '>' + formatted + '</td>';
+          var cellCls = '';
+          if (h.valueType === "url") cellCls = ' class="ps-reco-url-cell"';
+          else if (h.valueType === "node") cellCls = ' class="ps-reco-node-cell"';
+          else if (h.valueType === "bytes" || h.valueType === "ms" || h.valueType === "timespanMs" || h.valueType === "numeric") cellCls = ' class="ps-reco-num-cell"';
+          else if (h.valueType === "code" || h.valueType === "source-location") cellCls = ' class="ps-reco-code-cell"';
+          html += '<td' + cellCls + '>' + formatted + '</td>';
         });
         html += '</tr>';
       });
       html += '</tbody></table>';
+      if (totalCount > itemCount) {
+        html += '<div class="ps-reco-truncated">' + (totalCount - itemCount) + ' \u00e9l\u00e9ments suppl\u00e9mentaires non affich\u00e9s</div>';
+      }
+      html += '</div>';
     }
     html += '</div>';
   });
@@ -793,7 +849,50 @@ function psRenderRecoItems(recos) {
   return html;
 }
 
-/* ── Render detail content (gauges + CWV + recommendations) ── */
+/* ── Extract audit items from full API response ── */
+function psExtractAuditItems(a) {
+  var result = { items: [], headings: [], totalItems: 0 };
+  if (!a.details || !a.details.headings || !a.details.items) return result;
+  result.totalItems = a.details.items.length;
+  result.headings = a.details.headings.filter(function(h) {
+    return h.key && h.key !== "node";
+  }).map(function(h) {
+    return { key: h.key, label: h.label || h.key, valueType: h.valueType || "text", subItemsHeading: h.subItemsHeading || null };
+  });
+  // Include node heading if present (for element-specific audits)
+  a.details.headings.forEach(function(h) {
+    if (h.key === "node") {
+      result.headings.unshift({ key: "node", label: "\u00c9l\u00e9ment", valueType: "node" });
+    }
+  });
+  // Get all items (up to 25 for storage, unlimited for live rendering)
+  var items = a.details.items;
+  items.forEach(function(item) {
+    var row = {};
+    result.headings.forEach(function(h) {
+      var val = item[h.key];
+      if (val === undefined || val === null) return;
+      // Keep objects for node/url/source-location types to preserve full data
+      if (h.valueType === "node" || h.valueType === "source-location") {
+        row[h.key] = val;
+      } else if (typeof val === "object" && val.url) {
+        row[h.key] = val.url;
+      } else if (typeof val === "object" && val.snippet) {
+        row[h.key] = val;
+      } else {
+        row[h.key] = val;
+      }
+    });
+    // Include subItems if present (e.g., for third-party details)
+    if (item.subItems && item.subItems.items) {
+      row._subItems = item.subItems.items.slice(0, 5);
+    }
+    result.items.push(row);
+  });
+  return result;
+}
+
+/* ── Render detail content (gauges + CWV + opportunities + diagnostics + passed) ── */
 function psRenderDetailContent(data) {
   var catDefs = [
     { key: "performance", name: "Performance" },
@@ -809,6 +908,9 @@ function psRenderDetailContent(data) {
     { key: "speed-index", name: "Speed Index" },
     { key: "interactive", name: "Time to Interactive (TTI)" }
   ];
+  // CWV metric keys to exclude from audits (already shown above)
+  var cwvKeys = {};
+  metricDefs.forEach(function(m) { cwvKeys[m.key] = true; });
 
   var html = '<div class="ps-scores">';
 
@@ -830,7 +932,16 @@ function psRenderDetailContent(data) {
       html += '<div class="ps-metric-row"><span class="ps-metric-badge" style="background:' + color + '"></span><span class="ps-metric-name">' + m.name + '</span><span class="ps-metric-val" style="color:' + color + '">' + val + '</span></div>';
     });
 
-    html += psRenderRecoItems(data.recos);
+    // Split stored recos into opportunities and diagnostics
+    var opps = (data.recos || []).filter(function(r) { return r.group === "opportunity" || r.savings; });
+    var diags = (data.recos || []).filter(function(r) { return r.group === "diagnostic" && !r.savings; });
+    // Backward compat: if no group field, show all as opportunities
+    if (opps.length === 0 && diags.length === 0) opps = data.recos || [];
+    if (opps.length > 0) html += psRenderRecoItems(opps, "\uD83D\uDE80 Opportunit\u00e9s");
+    if (diags.length > 0) html += psRenderRecoItems(diags, "\uD83D\uDD0D Diagnostics");
+    if (data.passedCount) {
+      html += '<div class="ps-passed-title">\u2705 Audits r\u00e9ussis (' + data.passedCount + ')</div>';
+    }
   } else {
     // Render from full API response
     var cats = data.lighthouseResult.categories;
@@ -853,40 +964,57 @@ function psRenderDetailContent(data) {
       html += '<div class="ps-metric-row"><span class="ps-metric-badge" style="background:' + color + '"></span><span class="ps-metric-name">' + m.name + '</span><span class="ps-metric-val" style="color:' + color + '">' + val + '</span></div>';
     });
 
-    // Recommendations from audits (enriched)
-    var recos = [];
+    // Extract opportunities (with time/bytes savings)
+    var opportunities = [];
+    var diagnostics = [];
+    var passedCount = 0;
     Object.keys(audits).forEach(function(key) {
       var a = audits[key];
-      if (a.score !== null && a.score < 0.9 && a.details && a.details.type === "opportunity") {
-        var topItems = [];
-        var headings = [];
-        if (a.details.headings && a.details.items) {
-          headings = a.details.headings.map(function(h) { return { key: h.key, label: h.label || h.key, valueType: h.valueType || "text" }; });
-          var items = a.details.items.slice(0, 5);
-          items.forEach(function(item) {
-            var row = {};
-            headings.forEach(function(h) {
-              if (item[h.key] !== undefined && item[h.key] !== null) {
-                if (typeof item[h.key] === "object" && item[h.key].url) row[h.key] = item[h.key].url;
-                else if (typeof item[h.key] === "object" && item[h.key].snippet) row[h.key] = item[h.key].snippet;
-                else row[h.key] = item[h.key];
-              }
-            });
-            topItems.push(row);
-          });
+      if (cwvKeys[key]) return; // Already shown as CWV
+      if (a.scoreDisplayMode === "notApplicable" || a.scoreDisplayMode === "manual" || a.scoreDisplayMode === "informative") return;
+
+      if (a.score !== null && a.score >= 0.9) { passedCount++; return; }
+      if (a.score === null) return;
+
+      var extracted = psExtractAuditItems(a);
+      var reco = {
+        title: a.title,
+        desc: a.description || "",
+        score: a.score,
+        displayValue: a.displayValue || "",
+        headings: extracted.headings.length > 0 ? extracted.headings : undefined,
+        items: extracted.items.length > 0 ? extracted.items : undefined,
+        totalItems: extracted.totalItems
+      };
+
+      if (a.details && a.details.type === "opportunity") {
+        reco.group = "opportunity";
+        reco.savings = a.details.overallSavingsMs ? (a.details.overallSavingsMs / 1000).toFixed(1) : "";
+        if (a.details.overallSavingsBytes) {
+          reco.savingsBytes = a.details.overallSavingsBytes >= 1048576 ? (a.details.overallSavingsBytes / 1048576).toFixed(1) + " MB" : (a.details.overallSavingsBytes / 1024).toFixed(0) + " KB";
         }
-        recos.push({
-          title: a.title,
-          desc: a.description || "",
-          savings: a.details.overallSavingsMs ? (a.details.overallSavingsMs / 1000).toFixed(1) : "",
-          score: a.score,
-          headings: headings.length > 0 ? headings : undefined,
-          items: topItems.length > 0 ? topItems : undefined
-        });
+        opportunities.push(reco);
+      } else if (a.details && (a.details.type === "table" || a.details.type === "list")) {
+        reco.group = "diagnostic";
+        diagnostics.push(reco);
+      } else if (a.score < 0.9) {
+        reco.group = "diagnostic";
+        diagnostics.push(reco);
       }
     });
-    recos.sort(function(a, b) { return a.score - b.score; });
-    html += psRenderRecoItems(recos);
+
+    // Sort: worst score first, then by savings
+    opportunities.sort(function(a, b) {
+      var sa = parseFloat(a.savings) || 0, sb = parseFloat(b.savings) || 0;
+      return sb - sa;
+    });
+    diagnostics.sort(function(a, b) { return a.score - b.score; });
+
+    if (opportunities.length > 0) html += psRenderRecoItems(opportunities, "\uD83D\uDE80 Opportunit\u00e9s");
+    if (diagnostics.length > 0) html += psRenderRecoItems(diagnostics, "\uD83D\uDD0D Diagnostics");
+    if (passedCount > 0) {
+      html += '<div class="ps-passed-title">\u2705 Audits r\u00e9ussis (' + passedCount + ')</div>';
+    }
   }
 
   return html;
