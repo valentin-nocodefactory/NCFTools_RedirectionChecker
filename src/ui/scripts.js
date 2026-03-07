@@ -367,6 +367,80 @@ var PS_WEIGHTS = {
   "total-blocking-time":      0.30,
   "cumulative-layout-shift":  0.25
 };
+var PS_AUDIT_METRICS = {
+  "bootup-time": ["TBT"],
+  "critical-request-chains": ["FCP", "LCP"],
+  "dom-size": ["TBT"],
+  "duplicated-javascript": ["FCP", "LCP", "TBT"],
+  "efficient-animated-content": ["FCP", "LCP"],
+  "font-display": ["FCP", "LCP"],
+  "largest-contentful-paint-element": ["LCP"],
+  "layout-shift-elements": ["CLS"],
+  "layout-shifts": ["CLS"],
+  "lcp-lazy-loaded": ["LCP"],
+  "legacy-javascript": ["FCP", "LCP", "TBT"],
+  "long-tasks": ["TBT"],
+  "mainthread-work-breakdown": ["TBT"],
+  "modern-image-formats": ["FCP", "LCP"],
+  "non-composited-animations": ["CLS"],
+  "offscreen-images": ["FCP", "LCP"],
+  "prioritize-lcp-image": ["LCP"],
+  "redirects": ["FCP", "LCP"],
+  "render-blocking-resources": ["FCP", "LCP"],
+  "server-response-time": ["FCP", "LCP"],
+  "third-party-facades": ["TBT"],
+  "third-party-summary": ["TBT"],
+  "total-byte-weight": ["LCP"],
+  "unminified-css": ["FCP", "LCP"],
+  "unminified-javascript": ["FCP", "LCP"],
+  "unsized-images": ["CLS"],
+  "unused-css-rules": ["FCP", "LCP"],
+  "unused-javascript": ["FCP", "LCP"],
+  "uses-http2": ["FCP", "LCP"],
+  "uses-optimized-images": ["FCP", "LCP"],
+  "uses-rel-preconnect": ["FCP", "LCP"],
+  "uses-rel-preload": ["FCP", "LCP"],
+  "uses-responsive-images": ["FCP", "LCP"],
+  "uses-text-compression": ["FCP", "LCP"],
+  "viewport": ["TBT"]
+};
+var PS_METRIC_COLORS = {
+  "FCP": "#6c5ce7",
+  "LCP": "#e17055",
+  "TBT": "#fdcb6e",
+  "CLS": "#00b894",
+  "SI":  "#74b9ff",
+  "INP": "#fd79a8"
+};
+function psGetAuditMetrics(audit, auditId) {
+  // Source 1: metricSavings from Lighthouse v12+ (dynamic, page-specific)
+  if (audit.metricSavings) {
+    var nameMap = { FCP: "FCP", LCP: "LCP", TBT: "TBT", CLS: "CLS", INP: "INP" };
+    var metrics = [];
+    Object.keys(audit.metricSavings).forEach(function(k) {
+      if (nameMap[k] && audit.metricSavings[k] > 0) metrics.push(nameMap[k]);
+    });
+    if (metrics.length > 0) return metrics;
+  }
+  // Source 2: static mapping fallback
+  var id = auditId || (audit.id ? audit.id : "");
+  if (id && PS_AUDIT_METRICS[id]) {
+    return PS_AUDIT_METRICS[id].slice();
+  }
+  return [];
+}
+function psMetricBadgeColor(metric) {
+  return PS_METRIC_COLORS[metric] || "#636e72";
+}
+function psRenderMetricBadges(metrics) {
+  if (!metrics || metrics.length === 0) return "";
+  var html = '<span class="ps-reco-metrics">';
+  metrics.forEach(function(m) {
+    html += '<span class="ps-cwv-badge" style="background:' + psMetricBadgeColor(m) + '">' + m + '</span>';
+  });
+  html += '</span>';
+  return html;
+}
 
 function psRenderMetricBar(metricKey, numericValue, score, displayValue) {
   var t = PS_THRESHOLDS[metricKey];
@@ -531,13 +605,15 @@ function psSaveToStorage(domain) {
             });
             return clean;
           });
+          var auditMetrics = psGetAuditMetrics(a, k);
           var reco = {
             title: a.title,
             desc: a.description || "",
             score: a.score,
             headings: extracted.headings.length > 0 ? extracted.headings : undefined,
             items: storedItems.length > 0 ? storedItems : undefined,
-            totalItems: extracted.totalItems
+            totalItems: extracted.totalItems,
+            metrics: auditMetrics.length > 0 ? auditMetrics : undefined
           };
 
           if (a.details && a.details.type === "opportunity") {
@@ -923,7 +999,8 @@ function psRenderRecoItems(recos, sectionTitle) {
     html += '<div class="ps-reco-item" data-reco-idx="' + idx + '">' +
       '<span class="ps-reco-expand">\u25B6</span>' +
       '<span class="ps-reco-badge" style="background:' + color + '"></span>' +
-      '<span class="ps-reco-name">' + r.title + '</span>';
+      '<span class="ps-reco-name">' + r.title + '</span>' +
+      psRenderMetricBadges(r.metrics);
     if (r.savings && r.savings !== "0.0") {
       html += '<span class="ps-reco-saving">\u2212' + r.savings + ' s</span>';
     } else if (r.savingsBytes) {
@@ -1123,7 +1200,8 @@ function psRenderDetailContent(data) {
         displayValue: a.displayValue || "",
         headings: extracted.headings.length > 0 ? extracted.headings : undefined,
         items: extracted.items.length > 0 ? extracted.items : undefined,
-        totalItems: extracted.totalItems
+        totalItems: extracted.totalItems,
+        metrics: psGetAuditMetrics(a, key)
       };
 
       if (a.details && a.details.type === "opportunity") {

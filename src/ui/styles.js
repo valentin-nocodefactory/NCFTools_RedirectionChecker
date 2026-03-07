@@ -305,6 +305,8 @@ export const styles = `
   .ps-reco-item.ps-reco-expanded .ps-reco-expand { transform: rotate(90deg); }
   .ps-reco-badge { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .ps-reco-name { flex: 1; color: var(--text-sec); }
+  .ps-reco-metrics { display: inline-flex; gap: 4px; margin-left: 8px; vertical-align: middle; flex-shrink: 0; }
+  .ps-cwv-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; color: #fff; letter-spacing: 0.3px; line-height: 16px; white-space: nowrap; font-family: 'JetBrains Mono', monospace; }
   .ps-reco-saving { font-size: 11px; font-family: 'JetBrains Mono', monospace; color: #ef4444; font-weight: 600; white-space: nowrap; }
   .ps-reco-detail-wrap { display: none; padding: 0 0 12px 22px; }
   .ps-reco-desc { font-size: 11px; color: var(--text-muted); line-height: 1.6; padding: 8px 0 4px 0; }
