@@ -92,13 +92,17 @@ export function buildHtml() {
 <div class="tab-row">
   <button class="tab active" data-tab="input">&#128203; URLs</button>
   <button class="tab" data-tab="results">&#128202; R&eacute;sultats <span id="resultCount"></span></button>
+  <button class="tab" data-tab="pagespeed">&#9889; PageSpeed</button>
 </div>
 
 <!-- Input tab -->
 <div class="card" id="tab-input">
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px;flex-wrap:wrap">
     <label class="label" style="margin-bottom:0">Colle les URLs de l'ancien site (une par ligne)</label>
-    <button class="btn-small" id="btnHelp" style="font-size:10px;padding:5px 10px">&#10067; Comment r&eacute;cup&eacute;rer les URLs ?</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn-small" id="btnCrawlOld" style="font-size:10px;padding:5px 10px">&#128375; Crawler l'ancien site</button>
+      <button class="btn-small" id="btnHelp" style="font-size:10px;padding:5px 10px">&#10067; Comment r&eacute;cup&eacute;rer les URLs ?</button>
+    </div>
   </div>
   <textarea id="urlInput" placeholder="/ma-page&#10;/blog/mon-article&#10;/services/web-design&#10;/contact&#10;https://ancien-site.com/a-propos"></textarea>
   <div style="display:flex;gap:8px;padding:14px;background:var(--info-bg);border-radius:8px;border:1px solid var(--info-border);margin:16px 0;transition:background .3s,border-color .3s">
@@ -140,6 +144,46 @@ export function buildHtml() {
       </tr></thead>
       <tbody id="resultsBody"></tbody>
     </table>
+  </div>
+</div>
+
+<!-- PageSpeed tab -->
+<div class="card" id="tab-pagespeed" style="display:none">
+  <!-- Phase 1: Domain input + Crawl -->
+  <div id="psCrawlSection">
+    <div class="ps-input-row">
+      <div>
+        <label class="label">&#127760; Domaine &agrave; explorer</label>
+        <input type="text" id="psDomain" placeholder="www.example.com">
+      </div>
+      <button class="btn btn-primary" id="btnCrawl">&#128270; D&eacute;couvrir les pages</button>
+    </div>
+    <div id="psCrawlResults"></div>
+  </div>
+
+  <!-- Phase 2: Page list with controls -->
+  <div id="psPageList" style="display:none">
+    <div class="ps-controls-bar">
+      <div class="ps-controls-left">
+        <span class="ps-domain-label" id="psDomainLabel"></span>
+        <span class="ps-page-count" id="psPageCount"></span>
+      </div>
+      <div class="ps-controls-right">
+        <button class="btn-small" id="btnPsSelectAll">Tout s&eacute;lectionner</button>
+        <button class="btn-small" id="btnPsDeselectAll">Tout d&eacute;s&eacute;lectionner</button>
+        <div class="ps-strategy-toggle">
+          <button class="ps-strategy-btn active" data-strategy="mobile">&#128241; Mobile</button>
+          <button class="ps-strategy-btn" data-strategy="desktop">&#128187; Desktop</button>
+        </div>
+        <button class="btn btn-primary" id="btnPsAnalyze" style="padding:10px 20px;font-size:13px">&#9889; Analyser</button>
+        <button class="btn btn-red" id="btnPsStop" style="display:none;padding:10px 20px;font-size:13px">&#9632; Stop</button>
+      </div>
+    </div>
+    <div class="ps-progress-wrap" id="psProgressWrap" style="display:none">
+      <div class="progress-bar"><div class="progress-fill" id="psProgressFill" style="width:0%"></div></div>
+      <span class="ps-progress-text" id="psProgressText"></span>
+    </div>
+    <div id="psPageListBody"></div>
   </div>
 </div>
 

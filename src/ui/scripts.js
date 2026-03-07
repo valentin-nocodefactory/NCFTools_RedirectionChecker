@@ -62,6 +62,33 @@ qs("#btnShare").addEventListener("click", function() {
   });
 });
 
+qs("#btnCrawlOld").addEventListener("click", async function() {
+  var domain = qs("#oldDomain").value.trim();
+  if (!domain) { alert("Renseigne le domaine ancien d'abord."); return; }
+  if (domain.indexOf("http") !== 0) domain = "https://" + domain;
+
+  var btn = qs("#btnCrawlOld");
+  btn.disabled = true;
+  btn.innerHTML = "\u23F3 Crawl en cours\u2026";
+
+  try {
+    var resp = await fetch("/api/crawl?url=" + encodeURIComponent(domain));
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    if (!data.pages || data.pages.length === 0) throw new Error("Aucune page trouv\u00e9e.");
+
+    var paths = data.pages.map(function(url) {
+      try { return new URL(url).pathname; } catch(e) { return url; }
+    });
+    qs("#urlInput").value = paths.join("\n");
+    updateParseBtn();
+    btn.innerHTML = "\u2705 " + data.pages.length + " pages import\u00e9es (" + data.source + ")";
+  } catch(e) {
+    btn.innerHTML = "\u274C " + e.message;
+  }
+  setTimeout(function() { btn.disabled = false; btn.innerHTML = "\uD83D\uDD77 Crawler l'ancien site"; }, 3000);
+});
+
 qs("#btnHelp").addEventListener("click", function() {
   qs("#helpModal").style.display = "flex";
 });
@@ -83,12 +110,15 @@ qs("#helpModal").addEventListener("click", function(e) {
 })();
 
 /* ── Tabs ── */
+var tabIds = ["tab-input", "tab-results", "tab-pagespeed"];
 qsa(".tab").forEach(function(t) {
   t.addEventListener("click", function() {
     qsa(".tab").forEach(function(x) { x.classList.remove("active"); });
     t.classList.add("active");
-    qs("#tab-input").style.display = t.dataset.tab === "input" ? "block" : "none";
-    qs("#tab-results").style.display = t.dataset.tab === "results" ? "block" : "none";
+    tabIds.forEach(function(id) {
+      var el = qs("#" + id);
+      if (el) el.style.display = id === "tab-" + t.dataset.tab ? "block" : "none";
+    });
   });
 });
 
@@ -291,6 +321,737 @@ document.getElementById("glowBar").addEventListener("click", function() {
 });
 document.getElementById("trayClose").addEventListener("click", function() {
   glowWrap.classList.remove("open");
+});
+
+/* ═══════════════════════════════════════════
+   PageSpeed Insights — Batch Crawler
+   ═══════════════════════════════════════════ */
+var psStrategy = "mobile";
+var psPages = [];
+var psResults = {};
+var psRunning = false;
+var psAborted = false;
+var psExpandedUrl = null;
+var psDomainKey = "";
+var psExpandedFolders = {};
+
+function psColor(score) {
+  if (score >= 90) return "#22c55e";
+  if (score >= 50) return "#f59e0b";
+  return "#ef4444";
+}
+
+function psGaugeSvg(score) {
+  var r = 40, c = 2 * Math.PI * r;
+  var offset = c - (score / 100) * c;
+  var color = psColor(score);
+  return '<div class="ps-gauge">' +
+    '<svg viewBox="0 0 96 96"><circle cx="48" cy="48" r="' + r + '" class="ps-gauge-bg"/>' +
+    '<circle cx="48" cy="48" r="' + r + '" class="ps-gauge-fill" stroke="' + color + '" stroke-dasharray="' + c + '" stroke-dashoffset="' + offset + '"/></svg>' +
+    '<div class="ps-gauge-label" style="color:' + color + '">' + score + '</div></div>';
+}
+
+/* ── localStorage ── */
+function psLoadFromStorage(domain) {
+  try {
+    var stored = localStorage.getItem("ps_" + domain);
+    if (stored) {
+      var parsed = JSON.parse(stored);
+      psResults = parsed.results || {};
+      return parsed.selected || [];
+    }
+  } catch(e) {}
+  psResults = {};
+  return [];
+}
+
+function psSaveToStorage(domain) {
+  try {
+    var selected = [];
+    qsa(".ps-page-row input[type=checkbox]:checked").forEach(function(cb) {
+      selected.push(cb.closest(".ps-page-row").dataset.url);
+    });
+    // Compact results: store only scores + metrics + recos, not full API response
+    var compact = {};
+    Object.keys(psResults).forEach(function(url) {
+      compact[url] = {};
+      ["mobile", "desktop"].forEach(function(s) {
+        var d = psResults[url][s];
+        if (!d) return;
+        // Already compact format
+        if (d._compact) {
+          compact[url][s] = { scores: d.scores, cwv: d.cwv, recos: d.recos };
+          return;
+        }
+        // Full API response — extract compact data
+        if (!d.lighthouseResult) return;
+        var cats = d.lighthouseResult.categories;
+        var audits = d.lighthouseResult.audits;
+        var scores = {};
+        ["performance", "accessibility", "best-practices", "seo"].forEach(function(k) {
+          if (cats[k]) scores[k] = Math.round(cats[k].score * 100);
+        });
+        var cwv = {};
+        ["first-contentful-paint","largest-contentful-paint","total-blocking-time","cumulative-layout-shift","speed-index","interactive"].forEach(function(k) {
+          if (audits[k]) cwv[k] = { val: audits[k].displayValue || "", score: audits[k].score };
+        });
+        var recos = [];
+        Object.keys(audits).forEach(function(k) {
+          var a = audits[k];
+          if (a.score !== null && a.score < 0.9 && a.details && a.details.type === "opportunity") {
+            var topItems = [];
+            var headings = [];
+            if (a.details.headings && a.details.items) {
+              headings = a.details.headings.map(function(h) { return { key: h.key, label: h.label || h.key, valueType: h.valueType || "text" }; });
+              var items = a.details.items.slice(0, 5);
+              items.forEach(function(item) {
+                var row = {};
+                headings.forEach(function(h) {
+                  if (item[h.key] !== undefined && item[h.key] !== null) {
+                    if (typeof item[h.key] === "object" && item[h.key].url) row[h.key] = item[h.key].url;
+                    else if (typeof item[h.key] === "object" && item[h.key].snippet) row[h.key] = item[h.key].snippet;
+                    else row[h.key] = item[h.key];
+                  }
+                });
+                topItems.push(row);
+              });
+            }
+            recos.push({
+              title: a.title,
+              desc: a.description || "",
+              savings: a.details.overallSavingsMs ? (a.details.overallSavingsMs / 1000).toFixed(1) : "",
+              score: a.score,
+              headings: headings.length > 0 ? headings : undefined,
+              items: topItems.length > 0 ? topItems : undefined
+            });
+          }
+        });
+        recos.sort(function(a, b) { return a.score - b.score; });
+        compact[url][s] = { scores: scores, cwv: cwv, recos: recos };
+      });
+      if (psResults[url].lastAnalyzed) compact[url].lastAnalyzed = psResults[url].lastAnalyzed;
+    });
+    localStorage.setItem("ps_" + domain, JSON.stringify({ results: compact, selected: selected, savedAt: new Date().toISOString() }));
+  } catch(e) {}
+}
+
+function psLoadCompactResults(domain) {
+  try {
+    var stored = localStorage.getItem("ps_" + domain);
+    if (!stored) return [];
+    var parsed = JSON.parse(stored);
+    // Rebuild psResults from compact format for rendering
+    psResults = {};
+    Object.keys(parsed.results || {}).forEach(function(url) {
+      psResults[url] = { _compact: true };
+      ["mobile", "desktop"].forEach(function(s) {
+        var c = parsed.results[url][s];
+        if (!c) return;
+        psResults[url][s] = { _compact: true, scores: c.scores, cwv: c.cwv, recos: c.recos };
+      });
+      if (parsed.results[url].lastAnalyzed) psResults[url].lastAnalyzed = parsed.results[url].lastAnalyzed;
+    });
+    return parsed.selected || [];
+  } catch(e) {}
+  psResults = {};
+  return [];
+}
+
+/* ── Crawl site ── */
+async function psCrawlSite() {
+  var domain = qs("#psDomain").value.trim();
+  if (!domain) return;
+  if (domain.indexOf("http") !== 0) domain = "https://" + domain;
+
+  qs("#psCrawlResults").innerHTML = '<div class="ps-loading"><div class="ps-spinner"></div><div class="ps-loading-text">Exploration du site en cours\u2026</div></div>';
+
+  try {
+    var resp = await fetch("/api/crawl?url=" + encodeURIComponent(domain));
+    var data = await resp.json();
+    if (data.error) throw new Error(data.error);
+    if (!data.pages || data.pages.length === 0) throw new Error("Aucune page trouv\u00e9e sur ce site.");
+
+    psPages = data.pages;
+    try { psDomainKey = new URL(domain).hostname; } catch(e) { psDomainKey = domain; }
+
+    // Load previously saved state
+    var savedSelected = psLoadCompactResults(psDomainKey);
+
+    qs("#psCrawlResults").innerHTML = "";
+    qs("#psDomainLabel").textContent = psDomainKey;
+    qs("#psPageCount").textContent = "(" + psPages.length + " pages, source: " + data.source + ")";
+    qs("#psPageList").style.display = "block";
+
+    psRenderPageList(savedSelected);
+  } catch(e) {
+    qs("#psCrawlResults").innerHTML = '<div class="ps-error">\u274C ' + e.message + '</div>';
+  }
+}
+
+/* ── Get currently checked URLs ── */
+function psGetCheckedUrls() {
+  var checked = [];
+  qsa(".ps-page-row").forEach(function(row) {
+    var cb = row.querySelector("input[type=checkbox]");
+    if (cb && cb.checked) checked.push(row.dataset.url);
+  });
+  return checked;
+}
+
+/* ── Group pages by folder ── */
+function psGroupByFolder(pages) {
+  var groups = {};
+  pages.forEach(function(fullUrl) {
+    var path;
+    try { path = new URL(fullUrl).pathname; } catch(e) { path = fullUrl; }
+    var segments = path.replace(/^\//, "").split("/");
+    var folder;
+    if (segments.length <= 1 || (segments.length === 1 && segments[0] === "")) {
+      folder = "/ (racine)";
+    } else {
+      folder = segments[0];
+    }
+    if (!groups[folder]) groups[folder] = [];
+    groups[folder].push(fullUrl);
+  });
+  // Sort: root first, then alphabetical
+  var sortedKeys = Object.keys(groups).sort(function(a, b) {
+    if (a === "/ (racine)") return -1;
+    if (b === "/ (racine)") return 1;
+    return a.localeCompare(b);
+  });
+  var sorted = {};
+  sortedKeys.forEach(function(k) { sorted[k] = groups[k]; });
+  return sorted;
+}
+
+function psComputeFolderScores(urls) {
+  var sumPerf = 0, sumA11y = 0, sumSeo = 0, count = 0;
+  urls.forEach(function(url) {
+    var result = psResults[url];
+    if (!result || !result[psStrategy]) return;
+    var r = result[psStrategy];
+    var perf, a11y, seo;
+    if (r._compact) {
+      perf = r.scores.performance; a11y = r.scores.accessibility; seo = r.scores.seo;
+    } else if (r.lighthouseResult) {
+      var cats = r.lighthouseResult.categories;
+      perf = cats.performance ? Math.round(cats.performance.score * 100) : null;
+      a11y = cats.accessibility ? Math.round(cats.accessibility.score * 100) : null;
+      seo = cats.seo ? Math.round(cats.seo.score * 100) : null;
+    }
+    if (perf != null) { sumPerf += perf; sumA11y += (a11y || 0); sumSeo += (seo || 0); count++; }
+  });
+  if (count === 0) return null;
+  return { perf: Math.round(sumPerf / count), a11y: Math.round(sumA11y / count), seo: Math.round(sumSeo / count) };
+}
+
+function psGetPageMiniScores(fullUrl) {
+  var result = psResults[fullUrl];
+  var strat = psStrategy;
+  var miniScores = "";
+  if (result && result[strat]) {
+    var r = result[strat];
+    var perf, a11y, seo;
+    if (r._compact) {
+      perf = r.scores.performance; a11y = r.scores.accessibility; seo = r.scores.seo;
+    } else if (r.lighthouseResult) {
+      var cats = r.lighthouseResult.categories;
+      perf = cats.performance ? Math.round(cats.performance.score * 100) : null;
+      a11y = cats.accessibility ? Math.round(cats.accessibility.score * 100) : null;
+      seo = cats.seo ? Math.round(cats.seo.score * 100) : null;
+    }
+    if (perf != null) miniScores += '<span class="ps-mini-gauge" style="--gauge-color:' + psColor(perf) + '" title="Performance">' + perf + '</span>';
+    if (a11y != null) miniScores += '<span class="ps-mini-gauge" style="--gauge-color:' + psColor(a11y) + '" title="Accessibilit\u00e9">' + a11y + '</span>';
+    if (seo != null) miniScores += '<span class="ps-mini-gauge" style="--gauge-color:' + psColor(seo) + '" title="SEO">' + seo + '</span>';
+  }
+  return miniScores;
+}
+
+/* ── Render page list ── */
+function psRenderPageList(preselected) {
+  var groups = psGroupByFolder(psPages);
+  var html = "";
+  var folderKeys = Object.keys(groups);
+
+  // If first render, expand all folders
+  if (Object.keys(psExpandedFolders).length === 0) {
+    folderKeys.forEach(function(f) { psExpandedFolders[f] = true; });
+  }
+
+  folderKeys.forEach(function(folder) {
+    var urls = groups[folder];
+    var isOpen = psExpandedFolders[folder] !== false;
+    var folderScores = psComputeFolderScores(urls);
+
+    // Check if all/some/none are selected
+    var allChecked = true, noneChecked = true;
+    urls.forEach(function(u) {
+      var isChecked = preselected.length > 0 ? preselected.indexOf(u) >= 0 : false;
+      if (isChecked) noneChecked = false;
+      else allChecked = false;
+    });
+    var folderChecked = allChecked && !noneChecked;
+    var folderIndeterminate = !allChecked && !noneChecked ? false : (!allChecked && !noneChecked);
+
+    // Folder mini scores
+    var folderMiniScores = "";
+    if (folderScores) {
+      folderMiniScores += '<span class="ps-mini-gauge" style="--gauge-color:' + psColor(folderScores.perf) + '" title="Moy. Performance">' + folderScores.perf + '</span>';
+      folderMiniScores += '<span class="ps-mini-gauge" style="--gauge-color:' + psColor(folderScores.a11y) + '" title="Moy. Accessibilit\u00e9">' + folderScores.a11y + '</span>';
+      folderMiniScores += '<span class="ps-mini-gauge" style="--gauge-color:' + psColor(folderScores.seo) + '" title="Moy. SEO">' + folderScores.seo + '</span>';
+    }
+
+    // Folder header
+    html += '<div class="ps-folder-header" data-folder="' + folder.replace(/"/g, "&quot;") + '">' +
+      '<span class="ps-folder-chevron' + (isOpen ? " open" : "") + '">\u25B6</span>' +
+      '<label class="ps-folder-check" onclick="event.stopPropagation()">' +
+      '<input type="checkbox" class="ps-folder-cb"' + (folderChecked ? " checked" : "") + '>' +
+      '</label>' +
+      '<span class="ps-folder-icon">\uD83D\uDCC1</span>' +
+      '<span class="ps-folder-name">/' + (folder === "/ (racine)" ? "" : folder) + '</span>' +
+      '<span class="ps-folder-count">(' + urls.length + ' page' + (urls.length > 1 ? "s" : "") + ')</span>' +
+      '<div class="ps-mini-scores ps-folder-scores">' + folderMiniScores + '</div>' +
+      '</div>';
+
+    // Folder body
+    html += '<div class="ps-folder-body" data-folder-body="' + folder.replace(/"/g, "&quot;") + '"' + (isOpen ? "" : ' style="display:none"') + '>';
+
+    urls.forEach(function(fullUrl) {
+      var path;
+      try { path = new URL(fullUrl).pathname; } catch(e) { path = fullUrl; }
+      var checked = preselected.length > 0 ? preselected.indexOf(fullUrl) >= 0 : false;
+      var result = psResults[fullUrl];
+      var strat = psStrategy;
+
+      var miniScores = psGetPageMiniScores(fullUrl);
+      var statusIcon = "";
+      if (result && result[strat]) statusIcon = '<span class="ps-page-done">\u2713</span>';
+
+      html += '<div class="ps-page-row" data-url="' + fullUrl.replace(/"/g, "&quot;") + '">' +
+        '<label class="ps-page-check" onclick="event.stopPropagation()">' +
+        '<input type="checkbox"' + (checked ? " checked" : "") + '>' +
+        '</label>' +
+        '<span class="ps-page-path" title="' + fullUrl.replace(/"/g, "&quot;") + '">' + path + '</span>' +
+        '<div class="ps-mini-scores">' + miniScores + '</div>' +
+        statusIcon +
+        '</div>';
+
+      // Detail panel placeholder
+      html += '<div class="ps-page-detail" data-detail-for="' + fullUrl.replace(/"/g, "&quot;") + '" style="display:none"></div>';
+    });
+
+    html += '</div>'; // close folder body
+  });
+
+  qs("#psPageListBody").innerHTML = html;
+
+  // Click handler for row expansion
+  qsa(".ps-page-row").forEach(function(row) {
+    row.addEventListener("click", function(e) {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "LABEL") return;
+      psToggleDetail(row.dataset.url);
+    });
+  });
+
+  // Click handler for folder headers (chevron toggle)
+  qsa(".ps-folder-header").forEach(function(header) {
+    header.addEventListener("click", function(e) {
+      if (e.target.tagName === "INPUT" || e.target.tagName === "LABEL") return;
+      var folder = header.dataset.folder;
+      psExpandedFolders[folder] = !psExpandedFolders[folder];
+      var chevron = header.querySelector(".ps-folder-chevron");
+      var body = qs('[data-folder-body="' + folder.replace(/"/g, '\\"') + '"]');
+      if (psExpandedFolders[folder]) {
+        chevron.classList.add("open");
+        if (body) body.style.display = "block";
+      } else {
+        chevron.classList.remove("open");
+        if (body) body.style.display = "none";
+      }
+    });
+  });
+
+  // Folder checkbox: check/uncheck all children
+  qsa(".ps-folder-cb").forEach(function(cb) {
+    cb.addEventListener("change", function() {
+      var header = cb.closest(".ps-folder-header");
+      var folder = header.dataset.folder;
+      var body = qs('[data-folder-body="' + folder.replace(/"/g, '\\"') + '"]');
+      if (body) {
+        body.querySelectorAll('.ps-page-row input[type="checkbox"]').forEach(function(childCb) {
+          childCb.checked = cb.checked;
+        });
+      }
+    });
+  });
+}
+
+/* ── Toggle detail panel ── */
+function psToggleDetail(url) {
+  // Find the detail panel
+  var panels = qsa(".ps-page-detail");
+  var panel = null;
+  panels.forEach(function(p) { if (p.dataset.detailFor === url) panel = p; });
+  if (!panel) return;
+
+  // Collapse previous
+  if (psExpandedUrl && psExpandedUrl !== url) {
+    panels.forEach(function(p) {
+      if (p.dataset.detailFor === psExpandedUrl) p.style.display = "none";
+    });
+    // Remove highlight
+    qsa(".ps-page-row").forEach(function(r) { r.style.borderColor = ""; });
+  }
+
+  if (psExpandedUrl === url) {
+    panel.style.display = "none";
+    psExpandedUrl = null;
+    return;
+  }
+
+  psExpandedUrl = url;
+  var result = psResults[url];
+  if (!result || !result[psStrategy]) {
+    panel.innerHTML = '<div class="ps-detail-inner"><div class="ps-empty">Pas encore analys\u00e9. S\u00e9lectionne cette page et lance l\'analyse.</div></div>';
+  } else {
+    panel.innerHTML = '<div class="ps-detail-inner">' + psRenderDetailContent(result[psStrategy]) + '</div>';
+  }
+  panel.style.display = "block";
+
+  // Attach reco expand/collapse listeners
+  panel.querySelectorAll(".ps-reco-item").forEach(function(item) {
+    item.addEventListener("click", function() {
+      item.classList.toggle("ps-reco-expanded");
+      var chevron = item.querySelector(".ps-reco-expand");
+      if (chevron) chevron.textContent = item.classList.contains("ps-reco-expanded") ? "\u25BC" : "\u25B6";
+      var wrap = item.nextElementSibling;
+      if (wrap && wrap.classList.contains("ps-reco-detail-wrap")) {
+        wrap.style.display = item.classList.contains("ps-reco-expanded") ? "block" : "none";
+      }
+    });
+  });
+}
+
+/* ── Format item values for reco tables ── */
+function psFormatItemValue(value, valueType) {
+  if (value === undefined || value === null) return "\u2014";
+  if (valueType === "bytes") return (value / 1024).toFixed(1) + " KB";
+  if (valueType === "ms" || valueType === "timespanMs") return (value / 1000).toFixed(2) + " s";
+  if (valueType === "url") {
+    var s = String(value);
+    if (s.length > 70) return s.substring(0, 67) + "\u2026";
+    return s;
+  }
+  if (valueType === "node") {
+    if (typeof value === "object") return value.snippet || value.selector || "\u2014";
+    return String(value);
+  }
+  if (valueType === "numeric") return typeof value === "number" ? value.toFixed(1) : String(value);
+  return String(value);
+}
+
+function psRenderRecoItems(recos) {
+  if (!recos || recos.length === 0) return "";
+  var html = '<div class="ps-reco-title">\uD83D\uDCA1 Recommandations</div><div class="ps-reco-list">';
+  recos.forEach(function(r, idx) {
+    var color = psColor(Math.round(r.score * 100));
+    html += '<div class="ps-reco-item" data-reco-idx="' + idx + '">' +
+      '<span class="ps-reco-expand">\u25B6</span>' +
+      '<span class="ps-reco-badge" style="background:' + color + '"></span>' +
+      '<span class="ps-reco-name">' + r.title + '</span>' +
+      (r.savings ? '<span class="ps-reco-saving">-' + r.savings + ' s</span>' : '') +
+      '</div>';
+    // Detail wrap (description + table)
+    html += '<div class="ps-reco-detail-wrap">';
+    if (r.desc) {
+      // Clean markdown-style links from Lighthouse descriptions: [text](url) → text
+      var cleanDesc = r.desc.replace(/\[([^\]]+)\]\([^)]+\)/g, "$1");
+      html += '<div class="ps-reco-desc">' + cleanDesc + '</div>';
+    }
+    if (r.items && r.items.length > 0 && r.headings && r.headings.length > 0) {
+      html += '<table class="ps-reco-table"><thead><tr>';
+      r.headings.forEach(function(h) {
+        html += '<th>' + (h.label || h.key) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      r.items.forEach(function(item) {
+        html += '<tr>';
+        r.headings.forEach(function(h) {
+          var val = item[h.key];
+          var formatted = psFormatItemValue(val, h.valueType);
+          var cls = h.valueType === "url" ? ' class="ps-reco-url"' : '';
+          html += '<td' + cls + '>' + formatted + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+  });
+  html += '</div>';
+  return html;
+}
+
+/* ── Render detail content (gauges + CWV + recommendations) ── */
+function psRenderDetailContent(data) {
+  var catDefs = [
+    { key: "performance", name: "Performance" },
+    { key: "accessibility", name: "Accessibilit\u00e9" },
+    { key: "best-practices", name: "Bonnes pratiques" },
+    { key: "seo", name: "SEO" }
+  ];
+  var metricDefs = [
+    { key: "first-contentful-paint", name: "First Contentful Paint (FCP)" },
+    { key: "largest-contentful-paint", name: "Largest Contentful Paint (LCP)" },
+    { key: "total-blocking-time", name: "Total Blocking Time (TBT)" },
+    { key: "cumulative-layout-shift", name: "Cumulative Layout Shift (CLS)" },
+    { key: "speed-index", name: "Speed Index" },
+    { key: "interactive", name: "Time to Interactive (TTI)" }
+  ];
+
+  var html = '<div class="ps-scores">';
+
+  if (data._compact) {
+    // Render from compact stored data
+    catDefs.forEach(function(c) {
+      var score = data.scores[c.key] != null ? data.scores[c.key] : 0;
+      html += '<div class="ps-score-card">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div></div>';
+    });
+    html += '</div>';
+
+    html += '<div class="ps-metrics-title">\u2699\uFE0F Core Web Vitals</div>';
+    metricDefs.forEach(function(m) {
+      var cwv = data.cwv[m.key];
+      if (!cwv) return;
+      var val = cwv.val || "\u2014";
+      var score = cwv.score != null ? Math.round(cwv.score * 100) : null;
+      var color = score != null ? psColor(score) : "#64748b";
+      html += '<div class="ps-metric-row"><span class="ps-metric-badge" style="background:' + color + '"></span><span class="ps-metric-name">' + m.name + '</span><span class="ps-metric-val" style="color:' + color + '">' + val + '</span></div>';
+    });
+
+    html += psRenderRecoItems(data.recos);
+  } else {
+    // Render from full API response
+    var cats = data.lighthouseResult.categories;
+    var audits = data.lighthouseResult.audits;
+
+    catDefs.forEach(function(c) {
+      var cat = cats[c.key];
+      var score = cat ? Math.round(cat.score * 100) : 0;
+      html += '<div class="ps-score-card">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div></div>';
+    });
+    html += '</div>';
+
+    html += '<div class="ps-metrics-title">\u2699\uFE0F Core Web Vitals</div>';
+    metricDefs.forEach(function(m) {
+      var audit = audits[m.key];
+      if (!audit) return;
+      var val = audit.displayValue || "\u2014";
+      var score = audit.score != null ? Math.round(audit.score * 100) : null;
+      var color = score != null ? psColor(score) : "#64748b";
+      html += '<div class="ps-metric-row"><span class="ps-metric-badge" style="background:' + color + '"></span><span class="ps-metric-name">' + m.name + '</span><span class="ps-metric-val" style="color:' + color + '">' + val + '</span></div>';
+    });
+
+    // Recommendations from audits (enriched)
+    var recos = [];
+    Object.keys(audits).forEach(function(key) {
+      var a = audits[key];
+      if (a.score !== null && a.score < 0.9 && a.details && a.details.type === "opportunity") {
+        var topItems = [];
+        var headings = [];
+        if (a.details.headings && a.details.items) {
+          headings = a.details.headings.map(function(h) { return { key: h.key, label: h.label || h.key, valueType: h.valueType || "text" }; });
+          var items = a.details.items.slice(0, 5);
+          items.forEach(function(item) {
+            var row = {};
+            headings.forEach(function(h) {
+              if (item[h.key] !== undefined && item[h.key] !== null) {
+                if (typeof item[h.key] === "object" && item[h.key].url) row[h.key] = item[h.key].url;
+                else if (typeof item[h.key] === "object" && item[h.key].snippet) row[h.key] = item[h.key].snippet;
+                else row[h.key] = item[h.key];
+              }
+            });
+            topItems.push(row);
+          });
+        }
+        recos.push({
+          title: a.title,
+          desc: a.description || "",
+          savings: a.details.overallSavingsMs ? (a.details.overallSavingsMs / 1000).toFixed(1) : "",
+          score: a.score,
+          headings: headings.length > 0 ? headings : undefined,
+          items: topItems.length > 0 ? topItems : undefined
+        });
+      }
+    });
+    recos.sort(function(a, b) { return a.score - b.score; });
+    html += psRenderRecoItems(recos);
+  }
+
+  return html;
+}
+
+/* ── Batch analysis (parallel pool) ── */
+var PS_CONCURRENCY = 5;
+var psDoneCount = 0;
+var psTotalCount = 0;
+var psRateLimited = false;
+
+function psMarkRowAnalyzing(url) {
+  var row = null;
+  qsa(".ps-page-row").forEach(function(r) { if (r.dataset.url === url) row = r; });
+  if (row) {
+    var existingDone = row.querySelector(".ps-page-done");
+    if (existingDone) existingDone.remove();
+    var spinner = document.createElement("span");
+    spinner.className = "ps-page-spinner";
+    row.appendChild(spinner);
+    row.classList.add("ps-analyzing");
+  }
+}
+
+function psUnmarkRow(url) {
+  var row = null;
+  qsa(".ps-page-row").forEach(function(r) { if (r.dataset.url === url) row = r; });
+  if (row) {
+    row.classList.remove("ps-analyzing");
+    var sp = row.querySelector(".ps-page-spinner");
+    if (sp) sp.remove();
+  }
+}
+
+function psUpdateProgress(extra) {
+  qs("#psProgressFill").style.width = (psDoneCount / psTotalCount * 100) + "%";
+  qs("#psProgressText").textContent = extra || (psDoneCount + " / " + psTotalCount);
+}
+
+async function psAnalyzeOne(url) {
+  psMarkRowAnalyzing(url);
+  try {
+    var apiUrl = "/api/pagespeed?url=" + encodeURIComponent(url) + "&strategy=" + psStrategy;
+    var apiData = null;
+    var maxRetries = 3;
+    for (var attempt = 0; attempt < maxRetries; attempt++) {
+      if (psAborted) return;
+      // If another worker triggered rate limit, wait for it to clear
+      while (psRateLimited && !psAborted) {
+        await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+      }
+      if (psAborted) return;
+      var resp = await fetch(apiUrl);
+      if (resp.status === 429) {
+        // Signal all workers to pause
+        if (!psRateLimited) {
+          psRateLimited = true;
+          psUpdateProgress("Quota atteint, pause 60s\u2026 (essai " + (attempt + 1) + "/" + maxRetries + ")");
+          await new Promise(function(resolve) { setTimeout(resolve, 60000); });
+          psRateLimited = false;
+        } else {
+          // Another worker already pausing, just wait
+          while (psRateLimited && !psAborted) {
+            await new Promise(function(resolve) { setTimeout(resolve, 2000); });
+          }
+        }
+        continue;
+      }
+      if (!resp.ok) throw new Error("API error " + resp.status);
+      apiData = await resp.json();
+      break;
+    }
+    if (psAborted) return;
+    if (!apiData) throw new Error("429 apr\u00e8s " + maxRetries + " essais");
+
+    if (!psResults[url]) psResults[url] = {};
+    psResults[url][psStrategy] = apiData;
+    psResults[url].lastAnalyzed = new Date().toISOString();
+    psSaveToStorage(psDomainKey);
+  } catch(e) {
+    if (!psResults[url]) psResults[url] = {};
+    psResults[url][psStrategy + "_error"] = e.message;
+  } finally {
+    psUnmarkRow(url);
+  }
+  psDoneCount++;
+  psUpdateProgress();
+  // Re-render to show inline scores
+  var prevExpanded = psExpandedUrl;
+  var currentChecked = psGetCheckedUrls();
+  psRenderPageList(currentChecked);
+  if (prevExpanded) psToggleDetail(prevExpanded);
+}
+
+async function psAnalyzeSelection() {
+  var selected = [];
+  qsa(".ps-page-row").forEach(function(row) {
+    var cb = row.querySelector("input[type=checkbox]");
+    if (cb && cb.checked) selected.push(row.dataset.url);
+  });
+  if (selected.length === 0) return;
+
+  psRunning = true;
+  psAborted = false;
+  psDoneCount = 0;
+  psTotalCount = selected.length;
+  psRateLimited = false;
+  qs("#btnPsAnalyze").style.display = "none";
+  qs("#btnPsStop").style.display = "inline-block";
+  qs("#psProgressWrap").style.display = "flex";
+  psUpdateProgress();
+
+  // Worker pool: run up to PS_CONCURRENCY tasks in parallel
+  var queue = selected.slice();
+  var running = [];
+
+  function startNext() {
+    if (psAborted || queue.length === 0) return null;
+    var url = queue.shift();
+    var p = psAnalyzeOne(url).then(function() {
+      running.splice(running.indexOf(p), 1);
+    });
+    running.push(p);
+    return p;
+  }
+
+  // Start initial batch
+  for (var i = 0; i < Math.min(PS_CONCURRENCY, selected.length); i++) {
+    startNext();
+  }
+
+  // As each finishes, start the next one
+  while (running.length > 0 && !psAborted) {
+    await Promise.race(running);
+    if (!psAborted && queue.length > 0) startNext();
+  }
+
+  psRunning = false;
+  qs("#btnPsStop").style.display = "none";
+  qs("#btnPsAnalyze").style.display = "inline-block";
+  qs("#psProgressWrap").style.display = "none";
+}
+
+/* ── Event listeners ── */
+qs("#btnCrawl").addEventListener("click", psCrawlSite);
+qs("#psDomain").addEventListener("keydown", function(e) {
+  if (e.key === "Enter") psCrawlSite();
+});
+qs("#btnPsAnalyze").addEventListener("click", psAnalyzeSelection);
+qs("#btnPsStop").addEventListener("click", function() { psAborted = true; });
+qs("#btnPsSelectAll").addEventListener("click", function() {
+  qsa(".ps-page-row input[type=checkbox]").forEach(function(cb) { cb.checked = true; });
+});
+qs("#btnPsDeselectAll").addEventListener("click", function() {
+  qsa(".ps-page-row input[type=checkbox]").forEach(function(cb) { cb.checked = false; });
+});
+
+/* Strategy toggle */
+qsa(".ps-strategy-btn").forEach(function(b) {
+  b.addEventListener("click", function() {
+    qsa(".ps-strategy-btn").forEach(function(x) { x.classList.remove("active"); });
+    b.classList.add("active");
+    psStrategy = b.dataset.strategy;
+    if (psPages.length > 0) psRenderPageList([]);
+  });
 });
 </script>`;
 }
