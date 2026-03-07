@@ -209,11 +209,43 @@ export const styles = `
   .ps-score-name { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .05em; text-align: center; }
 
   .ps-metrics-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 12px; }
+  .ps-metrics-grid { display: flex; flex-direction: column; gap: 0; margin-bottom: 20px; }
   .ps-metric-row { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
   .ps-metric-row:last-child { border-bottom: none; }
+  .ps-metric-row-v2 { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+  .ps-metric-row-v2:last-child { border-bottom: none; }
+  .ps-metric-row-top { display: flex; align-items: center; gap: 10px; }
   .ps-metric-name { flex: 1; font-size: 12px; color: var(--text-sec); }
-  .ps-metric-val { font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', monospace; min-width: 80px; text-align: right; }
+  .ps-metric-val { font-size: 13px; font-weight: 700; font-family: 'JetBrains Mono', monospace; min-width: 60px; text-align: right; }
+  .ps-metric-points { font-size: 10px; font-family: 'JetBrains Mono', monospace; font-weight: 600; min-width: 50px; text-align: right; opacity: 0.8; }
   .ps-metric-badge { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .ps-metric-bar-wrap { position: relative; width: 100%; height: 8px; border-radius: 4px; overflow: visible; }
+  .ps-metric-bar-bg { position: absolute; inset: 0; border-radius: 4px; opacity: 0.85; }
+  .ps-metric-bar-marker { position: absolute; width: 3px; height: 16px; top: -4px; background: var(--text); border-radius: 2px; border: 1px solid rgba(0,0,0,.25); box-shadow: 0 1px 3px rgba(0,0,0,.3); z-index: 2; transition: left .6s ease; }
+  .ps-metric-thresholds { position: relative; display: flex; justify-content: space-between; font-size: 9px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; margin-top: 4px; height: 12px; }
+  .ps-metric-thresholds span { transform: translateX(-50%); white-space: nowrap; }
+  .ps-metric-thresholds span:first-child { transform: none; }
+  .ps-metric-thresholds span:last-child { transform: none; }
+
+  /* ── Score breakdown tooltip ── */
+  .ps-score-card-perf { position: relative; }
+  .ps-score-tooltip { position: absolute; bottom: calc(100% + 12px); left: 50%; transform: translateX(-50%); background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; min-width: 280px; z-index: 100; opacity: 0; pointer-events: none; transition: opacity .2s; box-shadow: 0 4px 24px rgba(0,0,0,.35); }
+  .ps-score-card-perf:hover .ps-score-tooltip { opacity: 1; pointer-events: auto; }
+  .ps-tooltip-arrow { position: absolute; bottom: -6px; left: 50%; transform: translateX(-50%); width: 12px; height: 6px; overflow: hidden; }
+  .ps-tooltip-arrow::after { content: ''; position: absolute; top: -6px; left: 0; width: 12px; height: 12px; background: var(--bg-card); border: 1px solid var(--border); transform: rotate(45deg); }
+  .ps-tooltip-title { font-size: 11px; font-weight: 700; margin-bottom: 10px; color: var(--text); }
+  .ps-tooltip-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 11px; }
+  .ps-tooltip-badge { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .ps-tooltip-name { flex: 1; color: var(--text-sec); font-weight: 500; }
+  .ps-tooltip-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 10px; min-width: 55px; text-align: right; }
+  .ps-tooltip-weight { font-size: 9px; color: var(--text-dim); min-width: 28px; text-align: right; }
+  .ps-tooltip-pts { font-size: 10px; font-family: 'JetBrains Mono', monospace; font-weight: 700; min-width: 40px; text-align: right; }
+  .ps-tooltip-total { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); font-size: 11px; font-weight: 700; color: var(--text); }
+  .ps-tooltip-total-val { font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+
+  /* ── Image lightbox ── */
+  .ps-lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.88); z-index: 10000; display: flex; align-items: center; justify-content: center; cursor: pointer; animation: cardFadeIn .2s ease-out; }
+  .ps-lightbox-img { max-width: 90vw; max-height: 90vh; border-radius: 8px; box-shadow: 0 0 40px rgba(0,0,0,.5); }
 
   .ps-loading { display: flex; flex-direction: column; align-items: center; gap: 16px; padding: 48px 0; }
   .ps-spinner { width: 40px; height: 40px; border: 3px solid var(--border); border-top-color: #3b82f6; border-radius: 50%; animation: psSpin 1s linear infinite; }
@@ -328,7 +360,8 @@ export const styles = `
   .ps-passed-title { font-size: 12px; color: var(--text-muted); margin: 16px 0 8px; padding: 8px 0; border-top: 1px solid var(--border); }
 
   /* Reco thumbnail */
-  .ps-reco-thumb { width: 48px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); vertical-align: middle; }
+  .ps-reco-thumb { width: 48px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); vertical-align: middle; cursor: pointer; transition: transform .2s, box-shadow .2s; }
+  .ps-reco-thumb:hover { transform: scale(2); z-index: 10; box-shadow: 0 4px 16px rgba(0,0,0,.4); position: relative; }
 
   @media (max-width: 640px) {
     .ps-controls-bar { flex-direction: column; align-items: flex-start; }

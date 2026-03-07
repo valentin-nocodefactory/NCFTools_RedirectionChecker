@@ -351,6 +351,113 @@ function psGaugeSvg(score) {
     '<div class="ps-gauge-label" style="color:' + color + '">' + score + '</div></div>';
 }
 
+/* ── PSI metric thresholds and weights ── */
+var PS_THRESHOLDS = {
+  "first-contentful-paint":   { good: 1800, poor: 3000, unit: "ms", max: 6000, short: "FCP" },
+  "largest-contentful-paint": { good: 2500, poor: 4000, unit: "ms", max: 8000, short: "LCP" },
+  "total-blocking-time":      { good: 200,  poor: 600,  unit: "ms", max: 1500, short: "TBT" },
+  "cumulative-layout-shift":  { good: 0.1,  poor: 0.25, unit: "",   max: 0.5,  short: "CLS" },
+  "speed-index":              { good: 3400, poor: 5800, unit: "ms", max: 10000, short: "SI" },
+  "interactive":              { good: 3800, poor: 7300, unit: "ms", max: 12000, short: "TTI" }
+};
+var PS_WEIGHTS = {
+  "first-contentful-paint":   0.10,
+  "speed-index":              0.10,
+  "largest-contentful-paint": 0.25,
+  "total-blocking-time":      0.30,
+  "cumulative-layout-shift":  0.25
+};
+
+function psRenderMetricBar(metricKey, numericValue, score, displayValue) {
+  var t = PS_THRESHOLDS[metricKey];
+  if (!t) return "";
+  var scoreInt = score != null ? Math.round(score * 100) : null;
+  var color = scoreInt != null ? psColor(scoreInt) : "#64748b";
+  var weight = PS_WEIGHTS[metricKey];
+  var points = (weight && score != null) ? (score * weight * 100).toFixed(1) : null;
+  // Calculate marker position as percentage
+  var markerPct = 0;
+  if (numericValue != null && t.max > 0) {
+    markerPct = Math.min(100, Math.max(0, (numericValue / t.max) * 100));
+  }
+  // Calculate zone boundaries as percentages
+  var goodPct = (t.good / t.max) * 100;
+  var poorPct = (t.poor / t.max) * 100;
+  // Format threshold labels
+  var goodLabel = t.unit === "ms" ? (t.good >= 1000 ? (t.good / 1000) + " s" : t.good + " ms") : String(t.good);
+  var poorLabel = t.unit === "ms" ? (t.poor >= 1000 ? (t.poor / 1000) + " s" : t.poor + " ms") : String(t.poor);
+
+  var html = '<div class="ps-metric-row-v2">';
+  html += '<div class="ps-metric-row-top">';
+  html += '<span class="ps-metric-badge" style="background:' + color + '"></span>';
+  html += '<span class="ps-metric-name">' + (PS_THRESHOLDS[metricKey].short || metricKey) + '</span>';
+  html += '<span class="ps-metric-val" style="color:' + color + '">' + (displayValue || "\u2014") + '</span>';
+  if (points != null) {
+    html += '<span class="ps-metric-points" style="color:' + color + '">' + points + ' pts</span>';
+  }
+  html += '</div>';
+  // Bar
+  html += '<div class="ps-metric-bar-wrap">';
+  html += '<div class="ps-metric-bar-bg" style="background:linear-gradient(90deg, #0cce6b 0%, #0cce6b ' + goodPct + '%, #ffa400 ' + goodPct + '%, #ffa400 ' + poorPct + '%, #ff4e42 ' + poorPct + '%, #ff4e42 100%)"></div>';
+  if (numericValue != null) {
+    html += '<div class="ps-metric-bar-marker" style="left:calc(' + markerPct + '% - 1.5px)"></div>';
+  }
+  html += '</div>';
+  // Thresholds
+  html += '<div class="ps-metric-thresholds">';
+  html += '<span>0</span>';
+  html += '<span style="position:absolute;left:' + goodPct + '%">' + goodLabel + '</span>';
+  html += '<span style="position:absolute;left:' + poorPct + '%">' + poorLabel + '</span>';
+  html += '<span></span>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function psScoreTooltipHtml(cwvData, isCompact) {
+  var weightDefs = [
+    { key: "first-contentful-paint", name: "FCP", weight: 0.10 },
+    { key: "speed-index", name: "SI", weight: 0.10 },
+    { key: "largest-contentful-paint", name: "LCP", weight: 0.25 },
+    { key: "total-blocking-time", name: "TBT", weight: 0.30 },
+    { key: "cumulative-layout-shift", name: "CLS", weight: 0.25 }
+  ];
+  var html = '<div class="ps-score-tooltip"><div class="ps-tooltip-arrow"></div>';
+  html += '<div class="ps-tooltip-title">Calcul du score Performance</div>';
+  var totalPts = 0;
+  weightDefs.forEach(function(w) {
+    var metricData = cwvData[w.key];
+    var val = "\u2014", metricScore = null, color = "#64748b";
+    if (metricData) {
+      val = metricData.val || metricData.displayValue || "\u2014";
+      metricScore = metricData.score;
+      if (metricScore != null) color = psColor(Math.round(metricScore * 100));
+    }
+    var pts = metricScore != null ? (metricScore * w.weight * 100) : 0;
+    totalPts += pts;
+    html += '<div class="ps-tooltip-row">';
+    html += '<span class="ps-tooltip-badge" style="background:' + color + '"></span>';
+    html += '<span class="ps-tooltip-name">' + w.name + '</span>';
+    html += '<span class="ps-tooltip-val" style="color:' + color + '">' + val + '</span>';
+    html += '<span class="ps-tooltip-weight">' + Math.round(w.weight * 100) + '%</span>';
+    html += '<span class="ps-tooltip-pts" style="color:' + color + '">' + pts.toFixed(1) + '</span>';
+    html += '</div>';
+  });
+  html += '<div class="ps-tooltip-total">';
+  html += '<span>Total</span><span class="ps-tooltip-total-val">' + Math.round(totalPts) + ' pts</span>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+function psShowImageLightbox(src) {
+  var overlay = document.createElement("div");
+  overlay.className = "ps-lightbox";
+  overlay.innerHTML = '<img src="' + src.replace(/"/g, "&quot;") + '" class="ps-lightbox-img">';
+  overlay.addEventListener("click", function() { overlay.remove(); });
+  document.body.appendChild(overlay);
+}
+
 /* ── localStorage ── */
 function psLoadFromStorage(domain) {
   try {
@@ -395,7 +502,7 @@ function psSaveToStorage(domain) {
         });
         var cwv = {};
         ["first-contentful-paint","largest-contentful-paint","total-blocking-time","cumulative-layout-shift","speed-index","interactive"].forEach(function(k) {
-          if (audits[k]) cwv[k] = { val: audits[k].displayValue || "", score: audits[k].score };
+          if (audits[k]) cwv[k] = { val: audits[k].displayValue || "", score: audits[k].score, numericValue: audits[k].numericValue != null ? audits[k].numericValue : null };
         });
         var recos = [];
         var passedCount = 0;
@@ -407,8 +514,23 @@ function psSaveToStorage(domain) {
           if (a.score === null) return;
 
           var extracted = psExtractAuditItems(a);
-          // Limit items to 15 for storage (balance detail vs size)
-          var storedItems = extracted.items.slice(0, 15);
+          // Limit items to 15 for storage; strip data: URLs (too large for localStorage)
+          var storedItems = extracted.items.slice(0, 15).map(function(item) {
+            var clean = {};
+            Object.keys(item).forEach(function(ik) {
+              var v = item[ik];
+              if (typeof v === "string" && v.indexOf("data:") === 0) return; // Skip base64
+              // For node objects, strip base64 thumbnail but keep other fields
+              if (typeof v === "object" && v !== null && v.thumbnail && typeof v.thumbnail === "string" && v.thumbnail.indexOf("data:") === 0) {
+                var nodeCopy = {};
+                Object.keys(v).forEach(function(nk) { if (nk !== "thumbnail") nodeCopy[nk] = v[nk]; });
+                clean[ik] = nodeCopy;
+                return;
+              }
+              clean[ik] = v;
+            });
+            return clean;
+          });
           var reco = {
             title: a.title,
             desc: a.description || "",
@@ -758,9 +880,13 @@ function psFormatItemValue(value, valueType) {
   if (valueType === "node") {
     if (typeof value === "object") {
       var parts = [];
-      if (value.snippet) parts.push('<code class="ps-reco-snippet">' + value.snippet.replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</code>');
-      if (value.selector) parts.push('<span class="ps-reco-selector">' + value.selector.replace(/</g, "&lt;") + '</span>');
+      // Show thumbnail image if available (PSI provides base64 or URL thumbnails for image elements)
+      if (value.thumbnail) {
+        parts.push('<img src="' + String(value.thumbnail).replace(/"/g, "&quot;") + '" class="ps-reco-thumb" loading="lazy" alt="' + (value.nodeLabel || "Element preview").replace(/"/g, "&quot;") + '" onclick="psShowImageLightbox(this.src);event.stopPropagation()">');
+      }
       if (value.nodeLabel) parts.push('<span class="ps-reco-node-label">' + value.nodeLabel.replace(/</g, "&lt;") + '</span>');
+      if (value.selector) parts.push('<span class="ps-reco-selector">' + value.selector.replace(/</g, "&lt;") + '</span>');
+      if (value.snippet) parts.push('<code class="ps-reco-snippet">' + value.snippet.replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</code>');
       return parts.length > 0 ? parts.join("") : "\u2014";
     }
     return String(value).replace(/</g, "&lt;");
@@ -778,7 +904,7 @@ function psFormatItemValue(value, valueType) {
   }
   if (valueType === "numeric") return typeof value === "number" ? value.toFixed(1) : String(value);
   if (valueType === "thumbnail") {
-    if (typeof value === "string" && value.indexOf("http") === 0) return '<img src="' + value.replace(/"/g, "&quot;") + '" class="ps-reco-thumb" loading="lazy">';
+    if (typeof value === "string" && (value.indexOf("http") === 0 || value.indexOf("data:") === 0)) return '<img src="' + value.replace(/"/g, "&quot;") + '" class="ps-reco-thumb" loading="lazy" alt="Resource preview" onclick="psShowImageLightbox(this.src);event.stopPropagation()">';
     return "\u2014";
   }
   // Default: handle objects and strings
@@ -865,7 +991,7 @@ function psExtractAuditItems(a) {
       result.headings.unshift({ key: "node", label: "\u00c9l\u00e9ment", valueType: "node" });
     }
   });
-  // Get all items (up to 25 for storage, unlimited for live rendering)
+  // Get all items
   var items = a.details.items;
   items.forEach(function(item) {
     var row = {};
@@ -875,6 +1001,9 @@ function psExtractAuditItems(a) {
       // Keep objects for node/url/source-location types to preserve full data
       if (h.valueType === "node" || h.valueType === "source-location") {
         row[h.key] = val;
+      } else if (h.valueType === "thumbnail") {
+        // Thumbnail: store the image URL directly
+        row[h.key] = typeof val === "string" ? val : (val && val.url ? val.url : null);
       } else if (typeof val === "object" && val.url) {
         row[h.key] = val.url;
       } else if (typeof val === "object" && val.snippet) {
@@ -908,34 +1037,35 @@ function psRenderDetailContent(data) {
     { key: "speed-index", name: "Speed Index" },
     { key: "interactive", name: "Time to Interactive (TTI)" }
   ];
-  // CWV metric keys to exclude from audits (already shown above)
   var cwvKeys = {};
   metricDefs.forEach(function(m) { cwvKeys[m.key] = true; });
 
   var html = '<div class="ps-scores">';
 
   if (data._compact) {
-    // Render from compact stored data
+    // ── COMPACT: Score cards with tooltip on Performance ──
     catDefs.forEach(function(c) {
       var score = data.scores[c.key] != null ? data.scores[c.key] : 0;
-      html += '<div class="ps-score-card">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div></div>';
+      if (c.key === "performance") {
+        html += '<div class="ps-score-card ps-score-card-perf">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div>' + psScoreTooltipHtml(data.cwv || {}, true) + '</div>';
+      } else {
+        html += '<div class="ps-score-card">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div></div>';
+      }
     });
     html += '</div>';
 
-    html += '<div class="ps-metrics-title">\u2699\uFE0F Core Web Vitals</div>';
+    // ── COMPACT: Metric bars ──
+    html += '<div class="ps-metrics-title">\u2699\uFE0F Core Web Vitals</div><div class="ps-metrics-grid">';
     metricDefs.forEach(function(m) {
       var cwv = data.cwv[m.key];
       if (!cwv) return;
-      var val = cwv.val || "\u2014";
-      var score = cwv.score != null ? Math.round(cwv.score * 100) : null;
-      var color = score != null ? psColor(score) : "#64748b";
-      html += '<div class="ps-metric-row"><span class="ps-metric-badge" style="background:' + color + '"></span><span class="ps-metric-name">' + m.name + '</span><span class="ps-metric-val" style="color:' + color + '">' + val + '</span></div>';
+      html += psRenderMetricBar(m.key, cwv.numericValue != null ? cwv.numericValue : null, cwv.score, cwv.val);
     });
+    html += '</div>';
 
-    // Split stored recos into opportunities and diagnostics
+    // ── COMPACT: Recos ──
     var opps = (data.recos || []).filter(function(r) { return r.group === "opportunity" || r.savings; });
     var diags = (data.recos || []).filter(function(r) { return r.group === "diagnostic" && !r.savings; });
-    // Backward compat: if no group field, show all as opportunities
     if (opps.length === 0 && diags.length === 0) opps = data.recos || [];
     if (opps.length > 0) html += psRenderRecoItems(opps, "\uD83D\uDE80 Opportunit\u00e9s");
     if (diags.length > 0) html += psRenderRecoItems(diags, "\uD83D\uDD0D Diagnostics");
@@ -943,36 +1073,45 @@ function psRenderDetailContent(data) {
       html += '<div class="ps-passed-title">\u2705 Audits r\u00e9ussis (' + data.passedCount + ')</div>';
     }
   } else {
-    // Render from full API response
+    // ── FULL API: Score cards with tooltip on Performance ──
     var cats = data.lighthouseResult.categories;
     var audits = data.lighthouseResult.audits;
+
+    // Build cwv data for tooltip
+    var cwvForTooltip = {};
+    metricDefs.forEach(function(m) {
+      var a = audits[m.key];
+      if (a) cwvForTooltip[m.key] = { val: a.displayValue || "", score: a.score, numericValue: a.numericValue || null };
+    });
 
     catDefs.forEach(function(c) {
       var cat = cats[c.key];
       var score = cat ? Math.round(cat.score * 100) : 0;
-      html += '<div class="ps-score-card">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div></div>';
+      if (c.key === "performance") {
+        html += '<div class="ps-score-card ps-score-card-perf">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div>' + psScoreTooltipHtml(cwvForTooltip, false) + '</div>';
+      } else {
+        html += '<div class="ps-score-card">' + psGaugeSvg(score) + '<div class="ps-score-name">' + c.name + '</div></div>';
+      }
     });
     html += '</div>';
 
-    html += '<div class="ps-metrics-title">\u2699\uFE0F Core Web Vitals</div>';
+    // ── FULL API: Metric bars ──
+    html += '<div class="ps-metrics-title">\u2699\uFE0F Core Web Vitals</div><div class="ps-metrics-grid">';
     metricDefs.forEach(function(m) {
       var audit = audits[m.key];
       if (!audit) return;
-      var val = audit.displayValue || "\u2014";
-      var score = audit.score != null ? Math.round(audit.score * 100) : null;
-      var color = score != null ? psColor(score) : "#64748b";
-      html += '<div class="ps-metric-row"><span class="ps-metric-badge" style="background:' + color + '"></span><span class="ps-metric-name">' + m.name + '</span><span class="ps-metric-val" style="color:' + color + '">' + val + '</span></div>';
+      html += psRenderMetricBar(m.key, audit.numericValue || null, audit.score, audit.displayValue);
     });
+    html += '</div>';
 
-    // Extract opportunities (with time/bytes savings)
+    // ── FULL API: Recos ──
     var opportunities = [];
     var diagnostics = [];
     var passedCount = 0;
     Object.keys(audits).forEach(function(key) {
       var a = audits[key];
-      if (cwvKeys[key]) return; // Already shown as CWV
+      if (cwvKeys[key]) return;
       if (a.scoreDisplayMode === "notApplicable" || a.scoreDisplayMode === "manual" || a.scoreDisplayMode === "informative") return;
-
       if (a.score !== null && a.score >= 0.9) { passedCount++; return; }
       if (a.score === null) return;
 
@@ -1003,7 +1142,6 @@ function psRenderDetailContent(data) {
       }
     });
 
-    // Sort: worst score first, then by savings
     opportunities.sort(function(a, b) {
       var sa = parseFloat(a.savings) || 0, sb = parseFloat(b.savings) || 0;
       return sb - sa;
