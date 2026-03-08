@@ -54,7 +54,7 @@ export function buildHtml() {
 <div style="margin-bottom:28px">
   <div style="display:flex;align-items:center;gap:14px;margin-bottom:6px">
     ${LOGO_SVG}
-    <span style="font-size:11px;padding:3px 10px;background:var(--badge-tag-bg);color:var(--badge-tag-color);border-radius:20px;font-weight:600;font-family:'JetBrains Mono',monospace">REDIRECT TOOL</span>
+    <span id="headerBadge" style="font-size:11px;padding:3px 10px;background:var(--badge-tag-bg);color:var(--badge-tag-color);border-radius:20px;font-weight:600;font-family:'JetBrains Mono',monospace">REDIRECT TOOL</span>
     <div style="flex:1"></div>
     <button class="theme-toggle" id="themeToggle" title="Changer le th&egrave;me">
       <span class="toggle-sun">&#9728;&#65039;</span>
@@ -63,6 +63,21 @@ export function buildHtml() {
   </div>
 </div>
 
+<!-- Feature selector bar -->
+<div class="feature-bar">
+  <button class="feature-btn active" data-feature="redirect">
+    <span class="feature-icon">&#128256;</span>
+    <span class="feature-name">Redirect Checker</span>
+  </button>
+  <button class="feature-btn" data-feature="pagespeed">
+    <span class="feature-icon">&#9889;</span>
+    <span class="feature-name">PageSpeed Insights</span>
+  </button>
+</div>
+
+<!-- Feature: Redirect Checker -->
+<div id="feature-redirect">
+
 <!-- Domain config card -->
 <div class="card">
   <div class="domain-row">
@@ -70,7 +85,8 @@ export function buildHtml() {
       <label class="label">&#128203; Domaine des URLs coll&eacute;es (ancien site)</label>
       <div class="domain-input-wrap">
         <img class="domain-fav" id="oldDomainFav" src="" alt="">
-        <input type="text" id="oldDomain" placeholder="ancien-site.com">
+        <input type="text" id="oldDomain" placeholder="ancien-site.com" autocomplete="off">
+        <div class="ac-dropdown" id="acOldDomain"></div>
       </div>
     </div>
     <div class="domain-arrow">&rarr;</div>
@@ -78,7 +94,8 @@ export function buildHtml() {
       <label class="label">&#9989; Nouveau domaine (&agrave; tester)</label>
       <div class="domain-input-wrap">
         <img class="domain-fav" id="newDomainFav" src="" alt="">
-        <input type="text" id="newDomain" placeholder="nouveau-site.com">
+        <input type="text" id="newDomain" placeholder="nouveau-site.com" autocomplete="off">
+        <div class="ac-dropdown" id="acNewDomain"></div>
       </div>
     </div>
   </div>
@@ -88,11 +105,10 @@ export function buildHtml() {
   </div>
 </div>
 
-<!-- Tabs -->
-<div class="tab-row">
-  <button class="tab active" data-tab="input">&#128203; URLs</button>
-  <button class="tab" data-tab="results">&#128202; R&eacute;sultats <span id="resultCount"></span></button>
-  <button class="tab" data-tab="pagespeed">&#9889; PageSpeed</button>
+<!-- Sub-tabs -->
+<div class="sub-tab-row">
+  <button class="sub-tab active" data-subtab="input">&#128203; URLs</button>
+  <button class="sub-tab" data-subtab="results">&#128202; R&eacute;sultats <span id="resultCount"></span></button>
 </div>
 
 <!-- Input tab -->
@@ -147,14 +163,22 @@ export function buildHtml() {
   </div>
 </div>
 
-<!-- PageSpeed tab -->
-<div class="card" id="tab-pagespeed" style="display:none">
+<!-- /feature-redirect -->
+</div>
+
+<!-- Feature: PageSpeed Insights -->
+<div id="feature-pagespeed" style="display:none">
+<div class="card" id="tab-pagespeed">
   <!-- Phase 1: Domain input + Crawl -->
   <div id="psCrawlSection">
     <div class="ps-input-row">
       <div>
         <label class="label">&#127760; Domaine &agrave; explorer</label>
-        <input type="text" id="psDomain" placeholder="www.example.com">
+        <div class="domain-input-wrap">
+          <img class="domain-fav" id="psDomainFav" src="" alt="">
+          <input type="text" id="psDomain" placeholder="www.example.com" autocomplete="off">
+          <div class="ac-dropdown" id="acPsDomain"></div>
+        </div>
       </div>
       <button class="btn btn-primary" id="btnCrawl">&#128270; D&eacute;couvrir les pages</button>
     </div>
@@ -185,6 +209,8 @@ export function buildHtml() {
     </div>
     <div id="psPageListBody"></div>
   </div>
+</div>
+<!-- /feature-pagespeed -->
 </div>
 
 <!-- Footer macaron -->

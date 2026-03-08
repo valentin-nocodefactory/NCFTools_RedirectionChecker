@@ -15,6 +15,135 @@ function qs(s) { return document.querySelector(s); }
 function qsa(s) { return document.querySelectorAll(s); }
 function cleanDomain(d) { return d.replace(/^https?:\/\//,"").replace(/\/+$/,""); }
 
+/* ── Domain history (autocomplete) ── */
+var AC_MAX = 10;
+var AC_STORAGE_KEY = "domain_history";
+
+function acLoadHistory() {
+  try {
+    var stored = localStorage.getItem(AC_STORAGE_KEY);
+    if (stored) return JSON.parse(stored);
+  } catch(e) {}
+  return [];
+}
+
+function acSaveHistory(list) {
+  try { localStorage.setItem(AC_STORAGE_KEY, JSON.stringify(list)); } catch(e) {}
+}
+
+function acAddDomain(domain) {
+  var d = cleanDomain(domain);
+  if (!d || d.length < 3) return;
+  var list = acLoadHistory();
+  list = list.filter(function(x) { return x !== d; });
+  list.unshift(d);
+  if (list.length > AC_MAX) list = list.slice(0, AC_MAX);
+  acSaveHistory(list);
+}
+
+function acGetAllDomains() {
+  var list = acLoadHistory();
+  for (var i = 0; i < localStorage.length; i++) {
+    var key = localStorage.key(i);
+    if (key && key.indexOf("ps_") === 0) {
+      var domain = key.substring(3);
+      if (domain && list.indexOf(domain) < 0) list.push(domain);
+    }
+  }
+  return list.slice(0, AC_MAX);
+}
+
+/* ── Autocomplete UI ── */
+var acActiveIndex = -1;
+
+function acRender(input, dropdown, filter) {
+  var domains = acGetAllDomains();
+  if (filter) {
+    var f = filter.toLowerCase();
+    domains = domains.filter(function(d) { return d.toLowerCase().indexOf(f) >= 0; });
+  }
+  if (domains.length === 0) {
+    dropdown.classList.remove("visible");
+    return;
+  }
+  var html = "";
+  domains.forEach(function(d, i) {
+    html += '<div class="ac-item' + (i === acActiveIndex ? ' ac-active' : '') + '" data-domain="' + d + '">' +
+      '<img class="ac-item-fav" src="https://www.google.com/s2/favicons?domain=' + d + '&sz=32" alt="">' +
+      '<span class="ac-item-domain">' + d + '</span>' +
+      '</div>';
+  });
+  dropdown.innerHTML = html;
+  dropdown.classList.add("visible");
+
+  dropdown.querySelectorAll(".ac-item").forEach(function(item) {
+    item.addEventListener("mousedown", function(e) {
+      e.preventDefault();
+      input.value = item.dataset.domain;
+      dropdown.classList.remove("visible");
+      acActiveIndex = -1;
+      input.dispatchEvent(new Event("input"));
+    });
+  });
+}
+
+function acHighlight(items) {
+  items.forEach(function(item, i) {
+    if (i === acActiveIndex) item.classList.add("ac-active");
+    else item.classList.remove("ac-active");
+  });
+}
+
+function acSetup(inputId, dropdownId) {
+  var input = qs("#" + inputId);
+  var dropdown = qs("#" + dropdownId);
+  if (!input || !dropdown) return;
+
+  input.addEventListener("focus", function() {
+    acActiveIndex = -1;
+    acRender(input, dropdown, input.value.trim());
+  });
+
+  var origInputHandler = null;
+  input.addEventListener("input", function() {
+    acActiveIndex = -1;
+    acRender(input, dropdown, input.value.trim());
+  });
+
+  input.addEventListener("blur", function() {
+    setTimeout(function() {
+      dropdown.classList.remove("visible");
+      acActiveIndex = -1;
+      var val = cleanDomain(input.value);
+      if (val && val.length >= 3) acAddDomain(val);
+    }, 150);
+  });
+
+  input.addEventListener("keydown", function(e) {
+    var items = dropdown.querySelectorAll(".ac-item");
+    if (!dropdown.classList.contains("visible") || items.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      acActiveIndex = (acActiveIndex + 1) % items.length;
+      acHighlight(items);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      acActiveIndex = acActiveIndex <= 0 ? items.length - 1 : acActiveIndex - 1;
+      acHighlight(items);
+    } else if (e.key === "Enter" && acActiveIndex >= 0) {
+      e.preventDefault();
+      input.value = items[acActiveIndex].dataset.domain;
+      dropdown.classList.remove("visible");
+      acActiveIndex = -1;
+      input.dispatchEvent(new Event("input"));
+    } else if (e.key === "Escape") {
+      dropdown.classList.remove("visible");
+      acActiveIndex = -1;
+    }
+  });
+}
+
 /* ── Domain preview ── */
 function updatePreview() {
   var o = cleanDomain(qs("#oldDomain").value);
@@ -102,22 +231,36 @@ qs("#helpModal").addEventListener("click", function(e) {
 /* ── Load URL params ── */
 (function loadParams() {
   var params = new URLSearchParams(location.search);
-  if (params.get("from")) qs("#oldDomain").value = params.get("from");
-  if (params.get("to")) qs("#newDomain").value = params.get("to");
+  if (params.get("from")) { qs("#oldDomain").value = params.get("from"); acAddDomain(params.get("from")); }
+  if (params.get("to")) { qs("#newDomain").value = params.get("to"); acAddDomain(params.get("to")); }
   if (params.get("urls")) qs("#urlInput").value = params.get("urls");
   if (params.get("from") || params.get("to")) updatePreview();
   if (params.get("urls")) updateParseBtn();
 })();
 
-/* ── Tabs ── */
-var tabIds = ["tab-input", "tab-results", "tab-pagespeed"];
-qsa(".tab").forEach(function(t) {
+/* ── Feature switching ── */
+var currentFeature = "redirect";
+qsa(".feature-btn").forEach(function(btn) {
+  btn.addEventListener("click", function() {
+    qsa(".feature-btn").forEach(function(x) { x.classList.remove("active"); });
+    btn.classList.add("active");
+    currentFeature = btn.dataset.feature;
+    qs("#feature-redirect").style.display = currentFeature === "redirect" ? "block" : "none";
+    qs("#feature-pagespeed").style.display = currentFeature === "pagespeed" ? "block" : "none";
+    var badge = qs("#headerBadge");
+    if (badge) badge.textContent = currentFeature === "pagespeed" ? "PAGESPEED" : "REDIRECT TOOL";
+  });
+});
+
+/* ── Sub-tabs (Redirect Checker) ── */
+var subTabIds = ["tab-input", "tab-results"];
+qsa(".sub-tab").forEach(function(t) {
   t.addEventListener("click", function() {
-    qsa(".tab").forEach(function(x) { x.classList.remove("active"); });
+    qsa(".sub-tab").forEach(function(x) { x.classList.remove("active"); });
     t.classList.add("active");
-    tabIds.forEach(function(id) {
+    subTabIds.forEach(function(id) {
       var el = qs("#" + id);
-      if (el) el.style.display = id === "tab-" + t.dataset.tab ? "block" : "none";
+      if (el) el.style.display = id === "tab-" + t.dataset.subtab ? "block" : "none";
     });
   });
 });
@@ -161,8 +304,10 @@ qs("#btnParse").addEventListener("click", function() {
     return { id: i, path: path, testUrl: "https://" + newD + path };
   });
   results = {}; currentFilter = "all"; renderResults();
-  qsa(".tab").forEach(function(x) { x.classList.remove("active"); });
-  qsa(".tab")[1].classList.add("active");
+  acAddDomain(oldD);
+  acAddDomain(newD);
+  qsa(".sub-tab").forEach(function(x) { x.classList.remove("active"); });
+  qsa(".sub-tab")[1].classList.add("active");
   qs("#tab-input").style.display = "none";
   qs("#tab-results").style.display = "block";
   qs("#resultCount").textContent = "(" + urls.length + ")";
@@ -321,6 +466,19 @@ document.getElementById("glowBar").addEventListener("click", function() {
 });
 document.getElementById("trayClose").addEventListener("click", function() {
   glowWrap.classList.remove("open");
+});
+
+/* ── Init autocomplete on domain inputs ── */
+acSetup("oldDomain", "acOldDomain");
+acSetup("newDomain", "acNewDomain");
+acSetup("psDomain", "acPsDomain");
+
+/* ── psDomain favicon ── */
+qs("#psDomain").addEventListener("input", function() {
+  var d = cleanDomain(qs("#psDomain").value);
+  var favEl = qs("#psDomainFav");
+  if (d.length > 2) { favEl.src = "https://www.google.com/s2/favicons?domain=" + d + "&sz=32"; favEl.classList.add("visible"); }
+  else { favEl.classList.remove("visible"); }
 });
 
 /* ═══════════════════════════════════════════
@@ -661,6 +819,7 @@ function psLoadCompactResults(domain) {
 async function psCrawlSite() {
   var domain = qs("#psDomain").value.trim();
   if (!domain) return;
+  acAddDomain(cleanDomain(domain));
   if (domain.indexOf("http") !== 0) domain = "https://" + domain;
 
   qs("#psCrawlResults").innerHTML = '<div class="ps-loading"><div class="ps-spinner"></div><div class="ps-loading-text">Exploration du site en cours\u2026</div></div>';
